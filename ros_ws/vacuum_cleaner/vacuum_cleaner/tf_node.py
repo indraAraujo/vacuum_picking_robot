@@ -17,7 +17,7 @@ class CoppeliaTFPublisher(Node):
             self.client = RemoteAPIClient()
             self.sim = self.client.getObject('sim')
             # Get robot handle
-            self.robotHandle = self.sim.getObject('/vacuumCleaner')
+            self.robotHandle = self.sim.getObject('/myRobot')
             
             self.get_logger().info('Connected to CoppeliaSim successfully')
         except Exception as e:

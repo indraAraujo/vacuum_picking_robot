@@ -12,7 +12,7 @@ class PublisherLaserscan(Node):
     def __init__(self):
         super().__init__('laserscan_bridge')
 
-        self.laserscan_publisher = self.create_publisher(LaserScan,'/vacuumCleaner/scan', 10)
+        self.laserscan_publisher = self.create_publisher(LaserScan,'/myRobot/scan', 10)
 
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -20,7 +20,7 @@ class PublisherLaserscan(Node):
         try:
             self.client = RemoteAPIClient()
             self.sim = self.client.getObject('sim')
-            self.robotHandle = self.sim.getObject('/vacuumCleaner')
+            self.robotHandle = self.sim.getObject('/myRobot')
             
             self.get_logger().info('Connected to CoppeliaSim successfully')
         except Exception as e:

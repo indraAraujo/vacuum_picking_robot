@@ -11,7 +11,7 @@ class SubscriberVelocity(Node):
         super().__init__('subscriber_velocity')
         self.subscription = self.create_subscription(
             Twist,
-            '/myRobot/cmd_vel',
+            '/cmd_vel',
             self.msg_callback,
             10
         )
@@ -23,7 +23,7 @@ class SubscriberVelocity(Node):
             self.sim = self.client.getObject('sim')
             self.get_logger().info('Connected to CoppeliaSim successfully.')
 
-            self.robotHandle = self.sim.getObject('/vacuumCleaner')
+            self.robotHandle = self.sim.getObject('/myRobot')
             self.left_signal = str(self.robotHandle) + 'leftVel'
             self.right_signal = str(self.robotHandle) + 'rightVel'
 

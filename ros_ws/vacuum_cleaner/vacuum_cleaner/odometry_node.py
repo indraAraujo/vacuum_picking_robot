@@ -14,9 +14,9 @@ class OdometryNode(Node):
         self.client = RemoteAPIClient()
         self.sim = self.client.getObject('sim')
 
-        self.robot_handle = self.sim.getObject('/vacuumCleaner')
-        self.left_motor = self.sim.getObject('/vacuumCleaner/leftMotor')
-        self.right_motor = self.sim.getObject('/vacuumCleaner/rightMotor')
+        self.robot_handle = self.sim.getObject('/myRobot')
+        self.left_motor = self.sim.getObject('/myRobot/leftMotor')
+        self.right_motor = self.sim.getObject('/myRobot/rightMotor')
 
         self.wheel_radius = 0.0975
         self.wheel_base = 0.381

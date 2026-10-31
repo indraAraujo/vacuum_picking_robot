@@ -17,7 +17,7 @@ class BatteryInformationNode(Node):
         self.sim = self.client.getObject('sim')
         self.robotHandle = self.sim.getObject('/myRobot')
 
-        self.msg_topic = self.create_publisher(BatteryState, 'my_robot/battery', 10)
+        self.msg_topic = self.create_publisher(BatteryState, 'myRobot/battery', 10)
 
         self.timer = self.create_timer(0.1, self.publish_battery_information)
 
