@@ -26,6 +26,13 @@ def generate_launch_description():
             package='vacuum_cleaner',
             executable='subscriber_velocity',
             output='screen',
+            # Recebe a saída do mux (teleop tem prioridade sobre o Nav2)
+            remappings=[('/cmd_vel', '/cmd_vel_mux')],
+        ),
+        Node(
+            package='vacuum_cleaner',
+            executable='cmd_vel_mux',
+            output='screen',
         ),
         Node(
             package='tf2_ros',

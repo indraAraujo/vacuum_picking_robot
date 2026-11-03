@@ -15,6 +15,9 @@ class SubscriberVelocity(Node):
             self.msg_callback,
             10
         )
+        # Tempo sem receber comando até parar o robô. Maior que o atraso de
+        # repetição do teclado (~0,5 s) para não dar tranco no teleop.
+        self.cmd_timeout = float(self.declare_parameter('cmd_timeout', 0.6).value)
         self.wheel_base = 0.20
         self.timer_interval = 0.02
 
@@ -43,7 +46,7 @@ class SubscriberVelocity(Node):
         self.last_cmd_time = time.monotonic()
 
     def send_velocity(self):
-        if time.monotonic() - self.last_cmd_time > 0.4:
+        if time.monotonic() - self.last_cmd_time > self.cmd_timeout:
             linear = 0.0
             angular = 0.0
         else:

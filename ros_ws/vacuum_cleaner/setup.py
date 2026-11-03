@@ -28,6 +28,7 @@ setup(
             "lidar_node = vacuum_cleaner.lidar:main",
             "tf_node_slam_toolbox = vacuum_cleaner.tf_node:main",
             "odometry_node = vacuum_cleaner.odometry_node:main",
+            "cmd_vel_mux = vacuum_cleaner.cmd_vel_mux:main",
         ],
     },
 )
