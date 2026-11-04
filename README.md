@@ -54,18 +54,34 @@ sensors to those nodes without worrying about state churn.
 
 ### Execução da Navegação
 
+O caminho deste repositório contém acentos e espaços, e o `rosidl` não consegue
+gerar interfaces nele. Por isso `vacuum_cleaner_interfaces` é compilado em uma
+cópia em caminho simples (refaça a cópia se mudar o `.srv`):
 
 ```bash
-cd ~/myrobot_bringup_ws
-colcon build --packages-select myrobot_interfaces myrobot_bringup
-set +u
 source /opt/ros/jazzy/setup.bash
+mkdir -p ~/vacuum_interfaces_ws/src
+cp -r ros_ws/src/vacuum_cleaner_interfaces ~/vacuum_interfaces_ws/src/
+(cd ~/vacuum_interfaces_ws && colcon build)
+source ~/vacuum_interfaces_ws/install/setup.bash
+colcon build --symlink-install --packages-select vacuum_cleaner
 source install/setup.bash
-set -u
-ros2 launch myrobot_bringup bringup.launch.py
 ```
 
-`bringup.launch.py` starts all six robot nodes plus Nav2's lifecycle manager.
+Abra `simulation/scene_house.ttt` no CoppeliaSim e rode:
+
+```bash
+ros2 launch vacuum_cleaner vacuum_cleaner.launch.py
+```
+
+O launch sobe os seis nós do robô, o SLAM Toolbox e o Nav2. Mande goals pelo
+RViz (`Nav2 Goal`, frame `map`) ou pela ação `/navigate_to_pose`.
+
+A simulação roda abaixo do tempo real, então o `myrobot_server` publica `/clock`
+e o SLAM e o Nav2 usam `use_sim_time`. Desligar a renderização do CoppeliaSim
+deixa tudo cerca de cinco vezes mais rápido.
+
+`vacuum_cleaner.launch.py` starts all six robot nodes plus their lifecycle manager.
 Watch the console: you should see the lifecycle “configured/activated” logs
 followed by the behaviour server’s initial snapshot and periodic battery data.
 
@@ -74,25 +90,21 @@ followed by the behaviour server’s initial snapshot and periodic battery data.
 - **Start cleaning** (from dock):
 
   ```bash
-  cd ~/myrobot_bringup_ws
-  set +u
   source /opt/ros/jazzy/setup.bash
+  source ~/vacuum_interfaces_ws/install/setup.bash
   source install/setup.bash
-  set -u
   
-  ros2 service call /myRobot/start_stop myrobot_interfaces/srv/StartStop '{command: "start"}'
+  ros2 service call /myRobot/start_stop vacuum_cleaner_interfaces/srv/StartStop '{command: "start"}'
   ```
 
 - **Request a stop** (forces auto docking when currently cleaning):
 
   ```bash
-  cd ~/myrobot_bringup_ws
-  set +u
   source /opt/ros/jazzy/setup.bash
+  source ~/vacuum_interfaces_ws/install/setup.bash
   source install/setup.bash
-  set -u
  
-  ros2 service call /myRobot/start_stop myrobot_interfaces/srv/StartStop '{command: "stop"}'
+  ros2 service call /myRobot/start_stop vacuum_cleaner_interfaces/srv/StartStop '{command: "stop"}'
   ```
 
 - **Monitor logs**: `ros2 log echo /rosout` or use `grep` on the node output to

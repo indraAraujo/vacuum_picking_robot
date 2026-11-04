@@ -13,10 +13,19 @@ from std_msgs.msg import Float32, String
 from sensor_msgs.msg import BatteryState, LaserScan
 from geometry_msgs.msg import Twist, TransformStamped
 from nav_msgs.msg import Odometry
+from rosgraph_msgs.msg import Clock
+from rclpy.time import Time
 from .modes import Mode
 from coppeliasim_zmqremoteapi_client import *
 
 WHEEL_BASE = 0.20
+WHEEL_RADIUS = 0.05
+# Na cena, a frente do robô é o eixo +Y do objeto /myRobot; em base_link é +X.
+FORWARD_YAW_OFFSET = math.pi / 2.0
+# As juntas giram ao contrário do sentido de avanço do robô.
+MOTOR_SIGN = -1.0
+# Tempo de simulação sem comando até parar as rodas.
+CMD_TIMEOUT = 0.6
 
 class MyRobot(LifecycleNode):
     def __init__(self):
@@ -30,6 +39,7 @@ class MyRobot(LifecycleNode):
         self._last_cmd = Twist()
         self._mode = Mode.IDLE
         self._timer = None
+        self._motor_timer = None
         self.pub_strength = None
         self.pub_angle = None
         self.pub_batt = None
@@ -41,16 +51,20 @@ class MyRobot(LifecycleNode):
 
         self.robotHandle = self.sim.getObject('/myRobot')
 
-        self.left_signal = str(self.robotHandle) + 'leftVel'
-        self.right_signal = str(self.robotHandle) + 'rightVel'
-        self.last_cmd_time = 0.0
+        self.left_motor = self.sim.getObject('/myRobot/leftMotor')
+        self.right_motor = self.sim.getObject('/myRobot/rightMotor')
+        self._wheel_cmd = (None, None)
+        self.last_cmd_time = None
 
-        self.broadcaster = tf2_ros.TransformBroadcaster(self)
+        if self.sim.getSimulationState() == self.sim.simulation_stopped:
+            self.sim.startSimulation()
+
+        self.tf_broadcaster = tf2_ros.TransformBroadcaster(self)
 
         position = self.sim.getObjectPosition(self.robotHandle, -1)
         orientation = self.sim.getObjectOrientation(self.robotHandle, -1)
         self.x0, self.y0 = position[0], position[1]
-        self.yaw0 = orientation[2]
+        self.yaw0 = orientation[2] + FORWARD_YAW_OFFSET
 
         self.lock = threading.Lock()
         self.x = 0.0
@@ -61,24 +75,35 @@ class MyRobot(LifecycleNode):
         self.last_sim_time = self.sim.getSimulationTime()
         self.running = True
 
-        self.odom_publisher = self.create_publisher(Odometry, '/myRobot/odom', 10)
+        self.sim_time = self.last_sim_time
 
-        self.reader = threading.Thread(target=self._on_robot_pose, daemon=True)
-        self.reader.start()
+        self.odom_publisher = self.create_publisher(Odometry, '/myRobot/odom', 10)
+        self.laserscan_publisher = self.create_publisher(LaserScan, '/scan', 10)
+        # A simulação pode rodar bem abaixo do tempo real, então todo o ROS
+        # (SLAM e Nav2) segue o relógio dela.
+        self.clock_publisher = self.create_publisher(Clock, '/clock', 10)
 
         self.declare_parameter('scanning_density', 2.5)
-        self.density=0.0
-        self.density = min(5.0, max(0.1, self.density))
+        self.density = min(5.0, max(
+            0.1, float(self.get_parameter('scanning_density').value)))
         laser_handle = self.sim.getObject('/myRobot/LaserScanner_2D')
         laser_script = self.sim.getScript(
             self.sim.scripttype_childscript, laser_handle)
         self.sim.setScriptSimulationParameter(
             laser_script, 'scanningDensity', self.density)
-        self.scanning_density = self.density
-        self.laserscan_publisher = self.create_publisher(LaserScan,'/scan', 10)
 
-        self.tf_buffer = tf2_ros.Buffer()
-        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+        self.laserscan_msg = LaserScan()
+        self.laserscan_msg.header.frame_id = 'laser_link'
+        self.laserscan_msg.angle_min = -math.pi / 2.0
+        self.laserscan_msg.angle_increment = math.pi / (self.density * 180.0)
+        self.laserscan_msg.range_min = 0.055
+        self.laserscan_msg.range_max = 10.0
+
+        # O cliente ZMQ não pode ser compartilhado entre threads.
+        self.reader_client = RemoteAPIClient()
+        self.reader_sim = self.reader_client.getObject('sim')
+        self.reader = threading.Thread(target=self._on_robot_pose, daemon=True)
+        self.reader.start()
 
     # ---------------- Lifecycle Callbacks ----------------
     def on_configure(self, state: State):
@@ -92,22 +117,28 @@ class MyRobot(LifecycleNode):
         self.sub_mode = self.create_subscription(String, '/myRobot/behaviour/mode', self._on_mode, qos)
         # Sim loop
         self._timer = self.create_timer(0.2, self._on_timer)
+        self._motor_timer = self.create_timer(0.05, self._on_send_velocity)
         return TransitionCallbackReturn.SUCCESS
 
     def on_activate(self, state: State):
-        if self._timer is not None and self._timer.is_canceled():
-            self._timer.reset()
+        for timer in (self._timer, self._motor_timer):
+            if timer is not None and timer.is_canceled():
+                timer.reset()
         self.get_logger().info('myrobot activated')
         return TransitionCallbackReturn.SUCCESS
 
     def _cancel_timer(self):
-        if self._timer is not None and not self._timer.is_canceled():
-            self._timer.cancel()
+        for timer in (self._timer, self._motor_timer):
+            if timer is not None and not timer.is_canceled():
+                timer.cancel()
+        self._set_wheels(0.0, 0.0)
 
     def _destroy_resources(self):
-        if self._timer is not None:
-            self.destroy_timer(self._timer)
-            self._timer = None
+        for attr in ('_timer', '_motor_timer'):
+            timer = getattr(self, attr)
+            if timer is not None:
+                self.destroy_timer(timer)
+                setattr(self, attr, None)
         for attr in ('pub_strength', 'pub_angle', 'pub_batt'):
             pub = getattr(self, attr)
             if pub is not None:
@@ -153,57 +184,43 @@ class MyRobot(LifecycleNode):
             self._mode = Mode.IDLE
 
     def _on_cmd(self, msg: Twist):
-        self._last_cmd = msg 
-        sub_linear = msg.linear.x
-        sub_angular = msg.angular.z
-        if time.monotonic() - self.last_cmd_time > 0.4:
-            linear = 0.0
-            angular = 0.0
-        else:
-            linear = sub_linear
-            angular = sub_angular
+        self._last_cmd = msg
+        with self.lock:
+            self.last_cmd_time = self.sim_time
 
-        left_velocity = linear - angular * WHEEL_BASE / 2.0
-        right_velocity = linear + angular * WHEEL_BASE / 2.0
+    def _set_wheels(self, left, right):
+        if (left, right) == self._wheel_cmd:
+            return
+        self.sim.setJointTargetVelocity(self.left_motor, left)
+        self.sim.setJointTargetVelocity(self.right_motor, right)
+        self._wheel_cmd = (left, right)
 
-        self.sim.setFloatSignal(self.left_signal, left_velocity)
-        self.sim.setFloatSignal(self.right_signal, right_velocity)
+    def _on_send_velocity(self):
+        with self.lock:
+            stale = (self.last_cmd_time is None
+                     or self.sim_time - self.last_cmd_time > CMD_TIMEOUT)
+        linear = 0.0 if stale else self._last_cmd.linear.x
+        angular = 0.0 if stale else self._last_cmd.angular.z
 
-    def _on_transform(self, child_handle, child_frame, parent_handle, parent_frame):
-        pos = self.sim.getObjectPosition(child_handle, parent_handle)
-        quat = self.sim.getObjectQuaternion(child_handle, parent_handle)
-
-        t = TransformStamped()
-        t.header.stamp = self.get_clock().now().to_msg()
-        t.header.frame_id = parent_frame
-        t.child_frame_id = child_frame
-        t.transform.translation.x = pos[0]
-        t.transform.translation.y = pos[1]
-        t.transform.translation.z = pos[2]
-        t.transform.rotation.x = quat[0]
-        t.transform.rotation.y = quat[1]
-        t.transform.rotation.z = quat[2]
-        t.transform.rotation.w = quat[3]
-
-        return t
-
-    def _on_publish_transform(self):
-        transforms = [
-            self.get_transform(self.robotHandle, 'base_link', -1, 'odom'),
-        ]
-
-        for t in transforms:
-            self.broadcaster.sendTransform(t)
+        left = MOTOR_SIGN * (linear - angular * WHEEL_BASE / 2.0) / WHEEL_RADIUS
+        right = MOTOR_SIGN * (linear + angular * WHEEL_BASE / 2.0) / WHEEL_RADIUS
+        self._set_wheels(left, right)
 
     def _on_robot_pose(self):
+        sim = self.reader_sim
         while self.running and rclpy.ok():
             try:
-                position = self.sim.getObjectPosition(self.robotHandle, -1)
-                orientation = self.sim.getObjectOrientation(self.robotHandle, -1)
-                sim_time = self.sim.getSimulationTime()
+                position = sim.getObjectPosition(self.robotHandle, -1)
+                orientation = sim.getObjectOrientation(self.robotHandle, -1)
+                sim_time = sim.getSimulationTime()
             except Exception as e:
                 self.get_logger().error(f'Failed to read CoppeliaSim state: {e}')
                 time.sleep(0.5)
+                continue
+
+            dt = sim_time - self.last_sim_time
+            if dt <= 0.0:
+                time.sleep(0.01)
                 continue
 
             with self.lock:
@@ -213,31 +230,33 @@ class MyRobot(LifecycleNode):
                 s = math.sin(self.yaw0)
                 x = c * dx + s * dy
                 y = -s * dx + c * dy
+                heading = orientation[2] + FORWARD_YAW_OFFSET
                 theta = math.atan2(
-                    math.sin(orientation[2] - self.yaw0),
-                    math.cos(orientation[2] - self.yaw0))
+                    math.sin(heading - self.yaw0),
+                    math.cos(heading - self.yaw0))
 
-                dt = sim_time - self.last_sim_time
-                if dt > 0.0:
-                    dtheta = math.atan2(
-                        math.sin(theta - self.theta),
-                        math.cos(theta - self.theta))
-                    self.v = (
-                        (x - self.x) * math.cos(self.theta)
-                        + (y - self.y) * math.sin(self.theta)) / dt
-                    self.w = dtheta / dt
-                else:
-                    self.v = 0.0
-                    self.w = 0.0
+                dtheta = math.atan2(
+                    math.sin(theta - self.theta),
+                    math.cos(theta - self.theta))
+                self.v = (
+                    (x - self.x) * math.cos(self.theta)
+                    + (y - self.y) * math.sin(self.theta)) / dt
+                self.w = dtheta / dt
 
                 self.x = x
                 self.y = y
                 self.theta = theta
                 self.last_sim_time = sim_time
+                self.sim_time = sim_time
 
-            time.sleep(0.1)
+            stamp = Time(nanoseconds=int(sim_time * 1e9)).to_msg()
+            clock = Clock()
+            clock.clock = stamp
+            self.clock_publisher.publish(clock)
+            self._on_publish_odometry(stamp)
+            self._on_publish_laserscan(sim, stamp)
 
-    def _on_publish_odometry(self):
+    def _on_publish_odometry(self, stamp):
         with self.lock:
             x = self.x
             y = self.y
@@ -245,70 +264,47 @@ class MyRobot(LifecycleNode):
             v = self.v
             w = self.w
 
-        current_time = self.get_clock().now()
-
         qz = math.sin(theta / 2.0)
         qw = math.cos(theta / 2.0)
 
         odom_msg = Odometry()
-        odom_msg.header.stamp = current_time.to_msg()
+        odom_msg.header.stamp = stamp
         odom_msg.header.frame_id = 'odom'
         odom_msg.child_frame_id = 'base_link'
 
         odom_msg.pose.pose.position.x = x
         odom_msg.pose.pose.position.y = y
-        odom_msg.pose.pose.position.z = 0.0
-        odom_msg.pose.pose.orientation.x = 0.0
-        odom_msg.pose.pose.orientation.y = 0.0
         odom_msg.pose.pose.orientation.z = qz
         odom_msg.pose.pose.orientation.w = qw
 
         odom_msg.twist.twist.linear.x = v
-        odom_msg.twist.twist.linear.y = 0.0
         odom_msg.twist.twist.angular.z = w
 
         self.odom_publisher.publish(odom_msg)
 
         t = TransformStamped()
-        t.header.stamp = current_time.to_msg()
+        t.header.stamp = stamp
         t.header.frame_id = 'odom'
         t.child_frame_id = 'base_link'
         t.transform.translation.x = x
         t.transform.translation.y = y
-        t.transform.translation.z = 0.0
-        t.transform.rotation.x = 0.0
-        t.transform.rotation.y = 0.0
         t.transform.rotation.z = qz
         t.transform.rotation.w = qw
 
         self.tf_broadcaster.sendTransform(t)
 
-    def _on_publish_laserscan(self):
-        timer_period_sec = 0.1
-        laserscan_msg = LaserScan()
-        laserscan_msg.header.frame_id = "laser_link"
-        laserscan_msg.angle_increment = math.pi / (self.density * 180.0)
-        laserscan_msg.angle_min = -90 * (math.pi/180)
-        laserscan_msg.angle_max = (90* (math.pi/180)) - laserscan_msg.angle_increment
-        laserscan_msg.time_increment = 0.0
-        laserscan_msg.scan_time = timer_period_sec
-        laserscan_msg.range_min = 0.055
-        laserscan_msg.range_max = 10.0
-        distance = []
-        distance = self.sim.getFloatArrayProperty(self.robotHandle, "signal.distSignal", {'noError' : True})
-        
+    def _on_publish_laserscan(self, sim, stamp):
+        distance = sim.getFloatArrayProperty(
+            self.robotHandle, 'signal.distSignal', {'noError': True})
         if not distance:
             return
 
-        now = self.get_clock().now()
-        self.laserscan_msg.header.stamp = now.to_msg()
-        self.laserscan_msg.ranges = distance
-        self.laserscan_msg.angle_increment = math.pi / (self.scanning_density * 180.0)
-        self.laserscan_msg.angle_max = (
-            self.laserscan_msg.angle_min
-            + (len(distance) - 1) * self.laserscan_msg.angle_increment)
-
-        self.laserscan_publisher.publish(self.laserscan_msg)
+        msg = self.laserscan_msg
+        msg.header.stamp = stamp
+        msg.ranges = distance
+        msg.angle_max = (
+            msg.angle_min + (len(distance) - 1) * msg.angle_increment)
+        self.laserscan_publisher.publish(msg)
 
     def _on_publish_docking(self):
         strength = Float32()
@@ -345,13 +341,7 @@ class MyRobot(LifecycleNode):
     def _on_timer(self):
         self._on_publish_docking()
         self._on_publish_battery()
-        self._on_publish_transform()
-        self._on_publish_odometry()
-       
 
-        
-
-    
 
 def main():
     rclpy.init()
