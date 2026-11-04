@@ -24,10 +24,12 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            "subscriber_velocity = vacuum_cleaner.velocity_node:main",
-            "lidar_node = vacuum_cleaner.lidar:main",
-            "tf_node_slam_toolbox = vacuum_cleaner.tf_node:main",
-            "odometry_node = vacuum_cleaner.odometry_node:main",
+            'behaviour_server = vacuum_cleaner.behaviour_server:main',
+            'myrobot_server = vacuum_cleaner.myrobot_server:main',
+            'cleaning_server = vacuum_cleaner.cleaning_server:main',
+            'autodocking_server = vacuum_cleaner.autodocking_server:main',
+            'charging_server = vacuum_cleaner.charging_server:main',
+            'charged_server = vacuum_cleaner.charged_server:main',
         ],
     },
 )
