@@ -83,7 +83,7 @@ class MyRobot(LifecycleNode):
         # (SLAM e Nav2) segue o relógio dela.
         self.clock_publisher = self.create_publisher(Clock, '/clock', 10)
 
-        self.declare_parameter('scanning_density', 2.5)
+        self.declare_parameter('scanning_density', 1.0)
         self.density = min(5.0, max(
             0.1, float(self.get_parameter('scanning_density').value)))
         laser_handle = self.sim.getObject('/myRobot/LaserScanner_2D')

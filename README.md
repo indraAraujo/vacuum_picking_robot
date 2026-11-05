@@ -107,6 +107,35 @@ ros2 launch vacuum_cleaner teleop.launch.py
 
 Com a janela `teleop` em foco, use `i`/`,` para andar para a frente e para trás, `j`/`l` para girar, `k` para parar e `q`/`z` para mudar a velocidade. O teclado tem prioridade sobre o Nav2 e sobre os nós de limpeza.
 
+### Continuar o mapeamento
+
+O SLAM Toolbox constrói o mapa enquanto o robô anda, e o mapa em construção fica só na memória. Para completar o mapa:
+
+1. Mantenha o launch principal aberto e dirija o robô pelo teclado até as áreas que faltam.
+2. Gire o robô nos cômodos e passe perto dos cantos, porque o lidar só cobre 180° à frente.
+3. Acompanhe o resultado no RViz.
+4. Salve o mapa em outro terminal, com o ambiente carregado, na raiz do repositório:
+
+   ```bash
+   ros2 run nav2_map_server map_saver_cli -f ros_ws/src/vacuum_cleaner/maps/casa --ros-args -p use_sim_time:=true
+   ```
+
+O comando sobrescreve `casa.pgm` e `casa.yaml`. Salve antes de fechar o launch.
+
+Esses arquivos são apenas uma imagem do mapa: o SLAM não consegue continuar a partir deles. Ao reiniciar o launch, o mapeamento recomeça do zero. Para retomar em outra sessão, salve também o estado do SLAM antes de fechar:
+
+```bash
+ros2 service call /slam_toolbox/serialize_map slam_toolbox/srv/SerializePoseGraph "{filename: 'casa_slam'}"
+```
+
+Esse comando grava `casa_slam.data` e `casa_slam.posegraph` na pasta em que o launch foi iniciado. Na sessão seguinte, com a cena reiniciada e o robô na posição inicial, suba o launch a partir da mesma pasta e carregue esse estado:
+
+```bash
+ros2 service call /slam_toolbox/deserialize_map slam_toolbox/srv/DeserializePoseGraph "{filename: 'casa_slam', match_type: 1}"
+```
+
+O `match_type: 1` retoma o mapa a partir do ponto em que o mapeamento começou.
+
 ### Iniciar e parar a limpeza
 
 ```bash
@@ -124,7 +153,23 @@ ros2 topic echo /myRobot/odom               # Odometria
 
 ### Desempenho da simulação
 
-A cena roda abaixo do tempo real: cerca de 5% com a renderização ligada e 25% com ela desligada na máquina de desenvolvimento. O robô anda devagar no relógio de parede, mas o Nav2 funciona porque segue o tempo da simulação (`/clock`). Desligue a renderização do CoppeliaSim para acelerar os testes.
+Em máquinas com placa NVIDIA híbrida, abra o CoppeliaSim pela placa dedicada, com a janela normal:
+
+```bash
+__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia ./coppeliaSim.sh
+```
+
+O laser é o outro gargalo. O parâmetro `scanning_density` do `myrobot_server` define os raios por grau, e o padrão é `1.0` (1° de resolução).
+
+| Configuração (cena `scene_house.ttt`) | Tempo real |
+|---|---|
+| Placa integrada, densidade 2.5 | 5% |
+| NVIDIA, densidade 2.5 | 21% |
+| NVIDIA, densidade 1.0 | 45% |
+
+Sem interface (`coppeliaSim.sh -h`), a velocidade chegou a 51% com densidade 1.0 e a 92% com 0.5.
+
+O SLAM e o Nav2 seguem o tempo da simulação (`/clock`), então continuam corretos abaixo do tempo real.
 
 ## Arquitetura
 
