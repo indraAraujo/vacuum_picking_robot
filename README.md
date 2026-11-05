@@ -2,155 +2,179 @@
 
 Arquitetura embarcada para um robô aspirador com garra capaz de pegar lixo, mapear ambientes e interagir com seres humanos.
 
-## Pacote de Navegação com Nav2
+O projeto usa ROS 2 Jazzy e simula o robô no CoppeliaSim. Hoje, esta branch tem a navegação autônoma (SLAM Toolbox e Nav2) e a máquina de estados de limpeza.
 
-### Nós do Pacote
+## Estrutura do repositório
 
-| Node | Role | Key I/O |
-| --- | --- | --- |
-| `myrobot_server` | Simulated mobile base publishing telemetry. | Publishes docking beacon signal, relative angle, and `sensor_msgs/BatteryState`; subscribes to `/myRobot/cmd_vel` commands and behaviour mode. |
-| `behaviour_server` | Central operational state machine. | Subscribes to battery %, docking strength, and `/myRobot/start_stop`; publishes `/myRobot/behaviour/mode`; logs every transition plus periodic battery summaries. |
-| `cleaning_server` | Emits a simple cleaning twist when mode is `CLEANING`. | Watches behaviour mode, publishes `/myRobot/cmd_vel`. |
-| `autodocking_server` | Drives toward the charging base when mode is `AUTODOCKING`. | Consumes docking signal topics and publishes `/myRobot/cmd_vel`. |
-| `charging_server` | Stub for charge supervision logic. | Listens to battery + behaviour topics; place charge control logic here. |
-| `charged_server` | Placeholder for maintenance tasks while docked. | Subscribes to behaviour mode. |
-| `nav2_lifecycle_manager` | Configures and activates every node listed in `config/lifecycle_manager.yaml`. | Ensures the lifecycle state is managed independently from operational behaviour. |
-
-Every node uses `QoSProfile(depth=1)` so transitions propagate quickly without
-back pressure. All topics/services live under the `/myRobot` namespace for
-clarity.
-
-### Máquina de Estados de Comportamentos
-
-`behaviour_server` owns the operational state. It initializes in `CHARGED`, then
-uses battery telemetry, “near dock” signal strength, and the Start/Stop service
-to decide mode transitions.
-
-```
-Start-up -> CHARGED
-CHARGED --(Start command)--> CLEANING
-CLEANING --(Battery <= 25%)--> AUTODOCKING
-AUTODOCKING --(Dock signal strong)--> CHARGING
-CHARGING --(Battery >= 99.9% & stop requested)--> CHARGED
-CHARGING --(Battery >= 99.9% & no stop)--> CLEANING
-CLEANING --(Stop command)--> AUTODOCKING
+```text
+.
+├── ros_ws/src/
+│   ├── vacuum_cleaner/             # Nós do robô, launch e configurações
+│   │   ├── config/                 # Parâmetros do Nav2 e do SLAM Toolbox
+│   │   ├── launch/                 # vacuum_cleaner.launch.py
+│   │   └── vacuum_cleaner/         # Código dos nós
+│   ├── vacuum_cleaner_interfaces/  # Serviço StartStop
+│   └── human_interaction/          # Pacote de interação (esqueleto)
+└── simulation/
+    └── scene_house.ttt             # Cena do robô no CoppeliaSim
 ```
 
-Implementation highlights:
+## Pré-requisitos
 
-- `BATTERY_LOW` is set to `0.25`. Crossing that threshold triggers automatic
-  docking if the robot is cleaning.
-- `_set_mode()` centralizes transitions and emits a log of the form
-  `Behaviour mode CLEANING -> AUTODOCKING (battery low (0.24))` so you can trace
-  *why* modes change.
-- `_log_battery_status()` fires every 5 s to log
-  `Battery status: 75.0% | mode=CLEANING | near_base=False | stop_requested=False`.
-- During `on_configure()` the node logs the initial state snapshot so you know
-  the starting mode and telemetry values when the application boots.
+- ROS 2 Jazzy
+- Nav2 e SLAM Toolbox:
 
-Depending on the mode, the other nodes either publish motion commands or remain
-idle. Because lifecycle activation never changes, you can add actuators and
-sensors to those nodes without worrying about state churn.
+  ```bash
+  sudo apt install ros-jazzy-navigation2 ros-jazzy-nav2-bringup ros-jazzy-slam-toolbox
+  ```
 
-### Execução da Navegação
+- CoppeliaSim
+- Cliente Python da Remote API, instalado no Python do sistema:
 
-O caminho deste repositório contém acentos e espaços, e o `rosidl` não consegue
-gerar interfaces nele. Por isso `vacuum_cleaner_interfaces` é compilado em uma
-cópia em caminho simples (refaça a cópia se mudar o `.srv`):
+  ```bash
+  pip install --user coppeliasim-zmqremoteapi-client
+  ```
+
+## Como compilar
+
+Rode os comandos na raiz do repositório.
+
+**1. Compile as interfaces em um caminho simples.** O `rosidl` não consegue gerar interfaces em caminhos como o deste repositório, que tem acentos e espaços. Se o seu caminho também tiver, compile uma cópia do pacote fora do repositório:
 
 ```bash
 source /opt/ros/jazzy/setup.bash
 mkdir -p ~/vacuum_interfaces_ws/src
 cp -r ros_ws/src/vacuum_cleaner_interfaces ~/vacuum_interfaces_ws/src/
 (cd ~/vacuum_interfaces_ws && colcon build)
+```
+
+Refaça esse passo sempre que alterar o arquivo `.srv`.
+
+**2. Compile o pacote do robô:**
+
+```bash
 source ~/vacuum_interfaces_ws/install/setup.bash
 colcon build --symlink-install --packages-select vacuum_cleaner
+```
+
+Depois de editar arquivos em `config/` ou `launch/`, compile de novo para que a alteração valha.
+
+## Como executar
+
+**1. Abra a cena.** No CoppeliaSim, abra `simulation/scene_house.ttt`. Não é preciso dar play: o `myrobot_server` inicia a simulação se ela estiver parada.
+
+**2. Carregue o ambiente.** Faça isso em cada terminal novo, na raiz do repositório:
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source ~/vacuum_interfaces_ws/install/setup.bash
 source install/setup.bash
 ```
 
-Abra `simulation/scene_house.ttt` no CoppeliaSim e rode:
+**3. Suba o projeto:**
 
 ```bash
 ros2 launch vacuum_cleaner vacuum_cleaner.launch.py
 ```
 
-O launch sobe os seis nós do robô, o SLAM Toolbox e o Nav2. Mande goals pelo
-RViz (`Nav2 Goal`, frame `map`) ou pela ação `/navigate_to_pose`.
+O launch sobe os seis nós do robô, o SLAM Toolbox e o Nav2. O sistema está pronto quando a mensagem `Managed nodes are active` aparecer duas vezes: uma para os nós do robô e outra para o Nav2.
 
-A simulação roda abaixo do tempo real, então o `myrobot_server` publica `/clock`
-e o SLAM e o Nav2 usam `use_sim_time`. Desligar a renderização do CoppeliaSim
-deixa tudo cerca de cinco vezes mais rápido.
+**4. Abra o RViz (opcional):**
 
-`vacuum_cleaner.launch.py` starts all six robot nodes plus their lifecycle manager.
-Watch the console: you should see the lifecycle “configured/activated” logs
-followed by the behaviour server’s initial snapshot and periodic battery data.
+```bash
+rviz2 -d /opt/ros/jazzy/share/nav2_bringup/rviz/nav2_default_view.rviz \
+  --ros-args -p use_sim_time:=true
+```
 
-### Interação com a execução
+### Mandar o robô para um ponto
 
-- **Start cleaning** (from dock):
+No RViz, use o botão **Nav2 Goal**. Pelo terminal:
 
-  ```bash
-  source /opt/ros/jazzy/setup.bash
-  source ~/vacuum_interfaces_ws/install/setup.bash
-  source install/setup.bash
-  
-  ros2 service call /myRobot/start_stop vacuum_cleaner_interfaces/srv/StartStop '{command: "start"}'
-  ```
+```bash
+ros2 action send_goal /navigate_to_pose nav2_msgs/action/NavigateToPose \
+  "{pose: {header: {frame_id: map}, pose: {position: {x: 0.8, y: 0.0}, orientation: {w: 1.0}}}}"
+```
 
-- **Request a stop** (forces auto docking when currently cleaning):
+As coordenadas estão no frame `map`, com origem no ponto em que o robô começou e `x` apontando para a frente dele.
 
-  ```bash
-  source /opt/ros/jazzy/setup.bash
-  source ~/vacuum_interfaces_ws/install/setup.bash
-  source install/setup.bash
- 
-  ros2 service call /myRobot/start_stop vacuum_cleaner_interfaces/srv/StartStop '{command: "stop"}'
-  ```
+### Iniciar e parar a limpeza
 
-- **Monitor logs**: `ros2 log echo /rosout` or use `grep` on the node output to
-  see transition reasons and battery summaries.
+```bash
+ros2 service call /myRobot/start_stop vacuum_cleaner_interfaces/srv/StartStop '{command: "start"}'
+ros2 service call /myRobot/start_stop vacuum_cleaner_interfaces/srv/StartStop '{command: "stop"}'
+```
 
-- **Inspect topics**: `ros2 topic echo /myRobot/behaviour/mode` or
-  `/myRobot/battery_state` to visualize the state machine working.
+### Acompanhar a execução
 
-Because `myrobot_server` simulates the docking signal and battery level, you can
-observe the entire cycle (clean → dock → charge → charged) without extra
-hardware.
+```bash
+ros2 topic echo /myRobot/behaviour/mode     # Modo atual
+ros2 topic echo /myRobot/battery_state      # Bateria simulada
+ros2 topic echo /myRobot/odom               # Odometria
+```
 
-## Operações do CLI
+### Desempenho da simulação
 
-**Essential commands**
+A cena roda abaixo do tempo real: cerca de 5% com a renderização ligada e 25% com ela desligada na máquina de desenvolvimento. O robô anda devagar no relógio de parede, mas o Nav2 funciona porque segue o tempo da simulação (`/clock`). Desligue a renderização do CoppeliaSim para acelerar os testes.
 
-- Check whether the stack is active (optional):
+## Arquitetura
 
-  ```bash
-  ros2 service call /lifecycle_manager/is_active std_srvs/srv/Trigger "{}"
-  ```
+### Nós
 
-  If `success: true`, the Lifecycle Manager considers the system “active”. (`/lifecycle_manager/is_active` is a `std_srvs/Trigger`; see the Nav2 API docs for details.)
+| Nó | Função | Principais entradas e saídas |
+| --- | --- | --- |
+| `myrobot_server` | Ponte com o CoppeliaSim e telemetria simulada | Assina `/myRobot/cmd_vel` e comanda os motores; publica `/clock`, `/scan`, `/myRobot/odom`, a TF `odom → base_link`, a bateria e o sinal da base |
+| `behaviour_server` | Máquina de estados de operação | Assina a bateria e o sinal da base; oferece `/myRobot/start_stop`; publica `/myRobot/behaviour/mode` |
+| `cleaning_server` | Movimento de limpeza no modo `CLEANING` | Publica uma velocidade fixa em `/myRobot/cmd_vel` |
+| `autodocking_server` | Aproximação da base no modo `AUTODOCKING` | Lê o sinal da base e publica em `/myRobot/cmd_vel` |
+| `charging_server` | Reservado para a supervisão da carga | Assina a bateria e o modo |
+| `charged_server` | Reservado para tarefas com o robô na base | Assina o modo |
+| `slam_toolbox` | Mapeamento e localização | Assina `/scan`; publica `/map` e a TF `map → odom` |
+| Nav2 | Planejamento e controle de trajetória | Oferece `/navigate_to_pose`; a saída do `collision_monitor` vai para `/myRobot/cmd_vel` |
 
-- Shut down the entire stack gracefully:
+### Ciclos de vida
 
-  ```bash
-  # SHUTDOWN = 4 on Jazzy
-  ros2 service call /lifecycle_manager/manage_nodes nav2_msgs/srv/ManageLifecycleNodes "{command: 4}"
-  ```
+Dois gerenciadores cuidam da inicialização, e ambos usam `config/nav2_params.yaml`:
 
-- Alternative sequences (when needed):
+- `/lifecycle_manager`: nós do robô.
+- `/lifecycle_manager_navigation`: nós do Nav2.
 
-  - Pause / resume without shutting down:
+O ciclo de vida só define se um nó está ativo. O que o robô faz em cada momento é decidido pelo modo publicado pelo `behaviour_server`.
 
-    ```bash
-    ros2 service call /lifecycle_manager/manage_nodes nav2_msgs/srv/ManageLifecycleNodes "{command: 1}"  # PAUSE
-    ros2 service call /lifecycle_manager/manage_nodes nav2_msgs/srv/ManageLifecycleNodes "{command: 2}"  # RESUME
-    ```
+### Máquina de estados
 
-  - Reset (deactivate, clean up, reconfigure/reactivate):
+O `behaviour_server` começa em `CHARGED` e usa a bateria, o sinal da base e o serviço `start_stop` para mudar de modo:
 
-    ```bash
-    ros2 service call /lifecycle_manager/manage_nodes nav2_msgs/srv/ManageLifecycleNodes "{command: 3}"
-    ```
+```text
+CHARGED     --(start)-----------------------> CLEANING
+CLEANING    --(bateria <= 25% ou stop)------> AUTODOCKING
+AUTODOCKING --(sinal da base forte)---------> CHARGING
+CHARGING    --(bateria cheia, com stop)-----> CHARGED
+CHARGING    --(bateria cheia, sem stop)-----> CLEANING
+```
+
+Cada transição aparece no log com o motivo, por exemplo `Behaviour mode CLEANING -> AUTODOCKING (battery low (0.24))`. A cada 5 s, o nó também registra a bateria e o modo atual.
+
+## Comandos de operação
+
+Os comandos abaixo usam o gerenciador dos nós do robô. Para o Nav2, troque `/lifecycle_manager` por `/lifecycle_manager_navigation`.
+
+```bash
+# Verificar se os nós estão ativos
+ros2 service call /lifecycle_manager/is_active std_srvs/srv/Trigger "{}"
+
+# Pausar, retomar, reiniciar ou encerrar
+ros2 service call /lifecycle_manager/manage_nodes nav2_msgs/srv/ManageLifecycleNodes "{command: 1}"  # Pausar
+ros2 service call /lifecycle_manager/manage_nodes nav2_msgs/srv/ManageLifecycleNodes "{command: 2}"  # Retomar
+ros2 service call /lifecycle_manager/manage_nodes nav2_msgs/srv/ManageLifecycleNodes "{command: 3}"  # Reiniciar
+ros2 service call /lifecycle_manager/manage_nodes nav2_msgs/srv/ManageLifecycleNodes "{command: 4}"  # Encerrar
+```
+
+## Limitações atuais
+
+- A limpeza e o docking ainda não usam o Nav2: esses nós publicam velocidades diretamente em `/myRobot/cmd_vel`. Não mande goals nos modos `CLEANING` e `AUTODOCKING`, porque os comandos se misturam.
+- A bateria e o sinal da base são simulados dentro do `myrobot_server`, sem relação com a posição real da base.
+- O lidar cobre 180° à frente do robô.
 
 ## Referências
 
-- [Base de arquitetura para navegação por Luciano](https://github.com/lucianovk/IA368II/tree/main)
+- [Base de arquitetura para navegação, por Luciano](https://github.com/lucianovk/IA368II/tree/main)
