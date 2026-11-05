@@ -21,6 +21,7 @@
   <exec_depend>nav2_lifecycle_manager</exec_depend>
   <exec_depend>nav2_bringup</exec_depend>
   <exec_depend>slam_toolbox</exec_depend>
+  <exec_depend>teleop_twist_keyboard</exec_depend>
   <exec_depend>coppeliasim_zmqremoteapi_client</exec_depend>
 
   <export>

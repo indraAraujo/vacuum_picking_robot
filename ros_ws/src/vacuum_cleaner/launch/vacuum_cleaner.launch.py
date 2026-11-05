@@ -28,7 +28,10 @@ def generate_launch_description():
         get_package_share_directory('nav2_bringup'), 'launch', 'navigation_launch.py')
 
     return LaunchDescription([
-        Node(package='vacuum_cleaner', executable='myrobot_server', name='myrobot', output='screen'),
+        # O robô recebe a saída do mux: o teleop tem prioridade sobre o resto.
+        Node(package='vacuum_cleaner', executable='myrobot_server', name='myrobot', output='screen',
+             remappings=[('/myRobot/cmd_vel', '/myRobot/cmd_vel_mux')]),
+        Node(package='vacuum_cleaner', executable='cmd_vel_mux', name='cmd_vel_mux', output='screen'),
         Node(package='vacuum_cleaner', executable='behaviour_server', name='behaviour_server', output='screen'),
         Node(package='vacuum_cleaner', executable='cleaning_server', name='cleaning_server', output='screen'),
         Node(package='vacuum_cleaner', executable='autodocking_server', name='autodocking_server', output='screen'),

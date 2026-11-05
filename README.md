@@ -97,6 +97,16 @@ ros2 action send_goal /navigate_to_pose nav2_msgs/action/NavigateToPose \
 
 As coordenadas estão no frame `map`, com origem no ponto em que o robô começou e `x` apontando para a frente dele.
 
+### Controlar pelo teclado
+
+Com o projeto rodando, abra outro terminal, carregue o ambiente e rode:
+
+```bash
+ros2 launch vacuum_cleaner teleop.launch.py
+```
+
+Com a janela `teleop` em foco, use `i`/`,` para andar para a frente e para trás, `j`/`l` para girar, `k` para parar e `q`/`z` para mudar a velocidade. O teclado tem prioridade sobre o Nav2 e sobre os nós de limpeza.
+
 ### Iniciar e parar a limpeza
 
 ```bash
@@ -122,12 +132,13 @@ A cena roda abaixo do tempo real: cerca de 5% com a renderização ligada e 25% 
 
 | Nó | Função | Principais entradas e saídas |
 | --- | --- | --- |
-| `myrobot_server` | Ponte com o CoppeliaSim e telemetria simulada | Assina `/myRobot/cmd_vel` e comanda os motores; publica `/clock`, `/scan`, `/myRobot/odom`, a TF `odom → base_link`, a bateria e o sinal da base |
+| `myrobot_server` | Ponte com o CoppeliaSim e telemetria simulada | Assina `/myRobot/cmd_vel_mux` e comanda os motores; publica `/clock`, `/scan`, `/myRobot/odom`, a TF `odom → base_link`, a bateria e o sinal da base |
 | `behaviour_server` | Máquina de estados de operação | Assina a bateria e o sinal da base; oferece `/myRobot/start_stop`; publica `/myRobot/behaviour/mode` |
 | `cleaning_server` | Movimento de limpeza no modo `CLEANING` | Publica uma velocidade fixa em `/myRobot/cmd_vel` |
 | `autodocking_server` | Aproximação da base no modo `AUTODOCKING` | Lê o sinal da base e publica em `/myRobot/cmd_vel` |
 | `charging_server` | Reservado para a supervisão da carga | Assina a bateria e o modo |
 | `charged_server` | Reservado para tarefas com o robô na base | Assina o modo |
+| `cmd_vel_mux` | Prioridade do teclado sobre os demais comandos | Assina `/myRobot/cmd_vel_teleop` e `/myRobot/cmd_vel`; publica `/myRobot/cmd_vel_mux`, que o `myrobot_server` assina |
 | `slam_toolbox` | Mapeamento e localização | Assina `/scan`; publica `/map` e a TF `map → odom` |
 | Nav2 | Planejamento e controle de trajetória | Oferece `/navigate_to_pose`; a saída do `collision_monitor` vai para `/myRobot/cmd_vel` |
 
