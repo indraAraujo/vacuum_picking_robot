@@ -57,7 +57,7 @@ class Area:
     """União de retângulos (x_min, x_max, y_min, y_max) no frame map.
 
     ``margin`` alarga todos os retângulos: o cleaning_server a usa quando o
-    robô está fora da área (por exemplo, empurrado pelo docking), para que a
+    robô está fora da área (por exemplo, se a limpeza começou na porta), para que a
     parede virtual não fique em cima dele.
     """
 
@@ -83,8 +83,8 @@ class Area:
     def follow(self, x, y, slack=0.10):
         """Ajusta a margem à posição do robô e devolve quanto ele está fora.
 
-        Dentro da área, margem zero. Quando ele aparece fora (empurrado pelo
-        docking, por exemplo), a margem salta até alcançá-lo, com ``slack`` de
+        Dentro da área, margem zero. Quando ele aparece fora (a limpeza começou
+        na porta, por exemplo), a margem salta até alcançá-lo, com ``slack`` de
         folga. Depois disso ela só encolhe, acompanhando-o na volta: se ele se
         afastar, bate na parede virtual em vez de levá-la junto.
         """

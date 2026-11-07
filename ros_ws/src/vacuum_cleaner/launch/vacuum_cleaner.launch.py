@@ -43,8 +43,9 @@ def generate_launch_description():
             'map', default_value=os.path.join(pkg_dir, 'maps', 'casa.yaml'),
             description='Mapa carregado quando slam:=false'),
         DeclareLaunchArgument(
-            'cleaning_sensors', default_value='map',
-            description='Onde a limpeza acha as paredes: map (sem o lidar) ou lidar'),
+            'cleaning_sensors', default_value='proximity',
+            description='Onde a limpeza acha as paredes: proximity (sensores de '
+                        'proximidade da cena), map (raios no mapa) ou lidar'),
         DeclareLaunchArgument(
             'bananas', default_value='15',
             description='Bananas espalhadas pelo chão para o robô aspirar (0 desliga)'),
@@ -65,7 +66,6 @@ def generate_launch_description():
         Node(package='vacuum_cleaner', executable='cleaning_server', name='cleaning_server', output='screen',
              parameters=[{'use_sim_time': True,
                           'sensors': LaunchConfiguration('cleaning_sensors')}]),
-        Node(package='vacuum_cleaner', executable='autodocking_server', name='autodocking_server', output='screen'),
         Node(package='vacuum_cleaner', executable='charging_server', name='charging_server', output='screen'),
         Node(package='vacuum_cleaner', executable='charged_server', name='charged_server', output='screen'),
         Node(

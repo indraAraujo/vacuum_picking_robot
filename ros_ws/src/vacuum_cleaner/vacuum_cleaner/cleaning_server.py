@@ -8,24 +8,27 @@ cleaning_server
   com a estratégia do controlador do projeto 4 - roomba (ver coverage.py), e
   publica a velocidade em /myRobot/cmd_vel.
 
-Os cinco sensores de proximidade do original vêm de uma de duas fontes
+Os cinco sensores de proximidade do original vêm de uma de três fontes
 (parâmetro ``sensors``):
 
-- ``map`` (padrão): raios no mapa (/map) a partir da pose exata da simulação
-  (/myRobot/odom). Não precisa do lidar, que pode ficar desligado durante a
-  limpeza (ver map_sensors.py);
+- ``proximity`` (padrão): os sensores de proximidade da cena, como no
+  original. O frontal é o /myRobot/proximitySensor; os outros quatro são
+  cópias dele que o myrobot_server cria (ver proximity.py) e publica em
+  /myRobot/proximity/<nome> (sensor_msgs/Range). Não precisa do lidar;
+- ``map``: raios no mapa (/map) a partir da pose exata da simulação
+  (ver map_sensors.py). Também sem o lidar;
 - ``lidar``: os pontos do /scan.
 
 Área de limpeza: ``/myRobot/cleaning/area`` (std_msgs/Float32MultiArray,
 latched) traz retângulos ``[x_min, x_max, y_min, y_max, ...]`` no frame map, e
 fora deles é parede virtual. É assim que "limpar a sala" fica só na sala: as
 portas e as passagens abertas viram parede. Lista vazia libera a casa toda.
-Se o robô estiver fora da área (o docking anda às cegas e pode empurrá-lo), a
+Se o robô estiver fora da área (a limpeza começou na porta, por exemplo), a
 parede virtual recua até ele; quando ele volta para dentro, ela volta ao lugar.
 
 Segurança: as paredes da cena não têm colisão, então andar sem enxergar faria
-o robô atravessá-las. Sem mapa (ou sem scan recente, na fonte ``lidar``), o
-robô fica parado.
+o robô atravessá-las. Sem leituras recentes dos sensores (ou sem mapa, na
+fonte ``map``), o robô fica parado.
 """
 import math
 import threading
@@ -39,11 +42,12 @@ from rclpy.executors import SingleThreadedExecutor
 from std_msgs.msg import Float32MultiArray, String
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import OccupancyGrid, Odometry
-from sensor_msgs.msg import LaserScan
+from sensor_msgs.msg import LaserScan, Range
 from .modes import Mode
 import tf2_ros
 from .coverage import AXLE_X, Coverage, scan_points, virtual_sensors
 from .map_sensors import Area, MapSensors, area_readings
+from . import proximity
 
 #: Posição do laser em base_link (a mesma do static_transform_publisher).
 LASER_X = 0.003
@@ -65,7 +69,8 @@ class Cleaning(LifecycleNode):
         self._map = None
         self._area = None
         self._outside_warned = False
-        self.declare_parameter('sensors', 'map')
+        self.declare_parameter('sensors', 'proximity')
+        self._prox = {}          # nome -> (distância, instante da leitura)
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
         self._last_t = None
@@ -81,8 +86,8 @@ class Cleaning(LifecycleNode):
         # Estado da varredura (SEEK, LANE, CONTOUR, TURN, BACK), para depurar.
         self.pub_state = self.create_publisher(String, '/myRobot/cleaning/state', qos)
         self.source = self.get_parameter('sensors').value
-        if self.source not in ('map', 'lidar'):
-            self.get_logger().error(f'sensors:={self.source}? use map ou lidar')
+        if self.source not in ('proximity', 'map', 'lidar'):
+            self.get_logger().error(f'sensors:={self.source}? use proximity, map ou lidar')
             return TransitionCallbackReturn.FAILURE
         self._subs = [
             self.create_subscription(String, '/myRobot/behaviour/mode', self._on_mode, qos),
@@ -91,7 +96,12 @@ class Cleaning(LifecycleNode):
         latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self._subs.append(self.create_subscription(
             Float32MultiArray, '/myRobot/cleaning/area', self._on_area, latched))
-        if self.source == 'map':
+        if self.source == 'proximity':
+            for nome in proximity.NAMES:
+                self._subs.append(self.create_subscription(
+                    Range, f'/myRobot/proximity/{nome}',
+                    lambda msg, nome=nome: self._on_range(nome, msg), 10))
+        elif self.source == 'map':
             self._subs.append(self.create_subscription(
                 OccupancyGrid, '/map', self._on_map, latched))
         else:
@@ -174,6 +184,10 @@ class Cleaning(LifecycleNode):
     def _on_odom(self, msg: Odometry):
         self._odom = msg
 
+    def _on_range(self, nome, msg: Range):
+        t = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        self._prox[nome] = (msg.range, t)
+
     def _on_map(self, msg: OccupancyGrid):
         self._map = MapSensors.from_msg(msg)
 
@@ -252,6 +266,17 @@ class Cleaning(LifecycleNode):
                 return None
             area = self._area_at(x, y)
             return self._map.readings(x, y, theta, area), x, y, theta
+        if self.source == 'proximity':
+            if len(self._prox) < len(proximity.NAMES):
+                self._blind('esperando os sensores de proximidade')
+                return None
+            if now - min(t for _, t in self._prox.values()) > SCAN_TIMEOUT:
+                self._blind('as leituras de proximidade estão atrasadas')
+                return None
+            theta = 2.0 * math.atan2(pose.orientation.z, pose.orientation.w)
+            readings = {nome: d for nome, (d, _) in self._prox.items()}
+            return (self._with_area(readings, pose),
+                    pose.position.x, pose.position.y, theta)
         if self._scan is None:
             self._blind('esperando /scan')
             return None
@@ -265,13 +290,17 @@ class Cleaning(LifecycleNode):
             self._blind('o scan está vazio (lidar desligado?)')
             return None
         theta = 2.0 * math.atan2(pose.orientation.z, pose.orientation.w)
-        readings = virtual_sensors(points)
-        no_mapa = self._map_pose(pose) if self._area is not None else None
-        if no_mapa is not None:
-            area = self._area_at(no_mapa[0], no_mapa[1])
-            fronteira = area_readings(area, *no_mapa)
-            readings = {k: min(v, fronteira[k]) for k, v in readings.items()}
+        readings = self._with_area(virtual_sensors(points), pose)
         return readings, pose.position.x, pose.position.y, theta
+
+    def _with_area(self, readings, pose):
+        """Junta às leituras a borda da área de limpeza, vista como parede."""
+        no_mapa = self._map_pose(pose) if self._area is not None else None
+        if no_mapa is None:
+            return readings
+        area = self._area_at(no_mapa[0], no_mapa[1])
+        fronteira = area_readings(area, *no_mapa)
+        return {k: min(v, fronteira[k]) for k, v in readings.items()}
 
     def _tick(self):
         if self._mode != Mode.CLEANING:
@@ -311,7 +340,7 @@ def main():
     finally:
         executor.shutdown()
         node.destroy_node()
-        rclpy.shutdown()
+        rclpy.try_shutdown()
 
 
 if __name__ == '__main__':

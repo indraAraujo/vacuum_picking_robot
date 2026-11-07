@@ -10,13 +10,14 @@ from rclpy.lifecycle import State, TransitionCallbackReturn
 from rclpy.qos import QoSProfile
 from rclpy.executors import SingleThreadedExecutor
 from std_msgs.msg import Float32, String
-from sensor_msgs.msg import BatteryState, LaserScan
+from sensor_msgs.msg import BatteryState, LaserScan, Range
 from geometry_msgs.msg import Twist, TransformStamped
 from nav_msgs.msg import Odometry
 from rosgraph_msgs.msg import Clock
 from std_srvs.srv import SetBool
 from rclpy.time import Time
 from .modes import Mode
+from . import proximity
 from coppeliasim_zmqremoteapi_client import *
 
 WHEEL_BASE = 0.20
@@ -44,7 +45,9 @@ class MyRobot(LifecycleNode):
         self._battery = 1.0
         self._battery_t = None
         # Descarga limpando e carga na base, em fração por segundo de simulação.
-        self.declare_parameter('battery_drain', 0.01)
+        # Sem descarga por padrão: a limpeza não para por bateria (não há
+        # autodocking). battery_drain > 0 faz a bateria cair limpando.
+        self.declare_parameter('battery_drain', 0.0)
         self.declare_parameter('battery_charge', 0.02)
         self.battery_drain = float(self.get_parameter('battery_drain').value)
         self.battery_charge = float(self.get_parameter('battery_charge').value)
@@ -63,6 +66,22 @@ class MyRobot(LifecycleNode):
         self._shutdown_grace = 2.0
 
         self.robotHandle = self.sim.getObject('/myRobot')
+
+        # Sensores de proximidade da limpeza: o frontal da cena e quatro cópias
+        # dele, criadas aqui como no 4 - roomba (ver proximity.py).
+        restos = proximity.remove_leftovers(self.sim)
+        if restos:
+            self.get_logger().info(f'tirei {restos} sensores de uma execução anterior')
+        self.prox_script, self.prox_handles = proximity.create(
+            self.sim, self.robotHandle, self.sim.getObject('/myRobot/proximitySensor'))
+        self.prox_publishers = {
+            nome: self.create_publisher(Range, f'/myRobot/proximity/{nome}', 10)
+            for nome in proximity.NAMES}
+        self.range_msg = Range()
+        self.range_msg.header.frame_id = 'base_link'
+        self.range_msg.radiation_type = Range.INFRARED
+        self.range_msg.field_of_view = 0.0
+        self.range_msg.max_range = proximity.SENSOR_RANGE
 
         self.left_motor = self.sim.getObject('/myRobot/leftMotor')
         self.right_motor = self.sim.getObject('/myRobot/rightMotor')
@@ -258,9 +277,9 @@ class MyRobot(LifecycleNode):
         sim = self.reader_sim
         while self.running and rclpy.ok():
             try:
-                position = sim.getObjectPosition(self.robotHandle, -1)
-                orientation = sim.getObjectOrientation(self.robotHandle, -1)
-                sim_time = sim.getSimulationTime()
+                # Uma chamada só: pose, tempo e os cinco sensores de proximidade.
+                position, orientation, sim_time, prox = sim.callScriptFunction(
+                    'snapshot', self.prox_script, self.robotHandle, self.prox_handles)
             except Exception as e:
                 self.get_logger().error(f'Failed to read CoppeliaSim state: {e}')
                 time.sleep(0.5)
@@ -300,13 +319,21 @@ class MyRobot(LifecycleNode):
             stamp = Time(nanoseconds=int(sim_time * 1e9)).to_msg()
             clock = Clock()
             clock.clock = stamp
-            self.clock_publisher.publish(clock)
-            self._on_publish_odometry(stamp)
-            if self.lidar_enabled:
-                self._on_publish_laserscan(sim, stamp)
-            elif sim_time - self._last_empty_scan >= EMPTY_SCAN_PERIOD:
-                self._last_empty_scan = sim_time
-                self._on_publish_empty_scan(stamp)
+            try:
+                self.clock_publisher.publish(clock)
+                self._on_publish_odometry(stamp)
+                self._on_publish_proximity(stamp, prox)
+                if self.lidar_enabled:
+                    self._on_publish_laserscan(sim, stamp)
+                elif sim_time - self._last_empty_scan >= EMPTY_SCAN_PERIOD:
+                    self._last_empty_scan = sim_time
+                    self._on_publish_empty_scan(stamp)
+            except Exception:
+                # No Ctrl+C o contexto do ROS fecha enquanto esta thread ainda
+                # publica: aí é só sair.
+                if not rclpy.ok():
+                    break
+                raise
 
     def _on_publish_odometry(self, stamp):
         with self.lock:
@@ -345,6 +372,20 @@ class MyRobot(LifecycleNode):
 
         self.tf_broadcaster.sendTransform(t)
 
+    def _on_publish_proximity(self, stamp, raw):
+        msg = self.range_msg
+        msg.header.stamp = stamp
+        for nome, dist in proximity.readings(raw).items():
+            msg.min_range = proximity.OFFSETS[nome]
+            msg.range = dist          # +inf: nada no alcance (REP 117)
+            self.prox_publishers[nome].publish(msg)
+
+    def remove_proximity(self):
+        """Tira da cena as cópias do sensor e o script (não o sensor frontal)."""
+        client = RemoteAPIClient(port=self.sim_port)   # a do nó pode ter ficado no meio de uma chamada
+        sim = client.getObject('sim')
+        sim.removeObjects(self.prox_handles[1:] + [self.prox_script])
+
     def _on_publish_laserscan(self, sim, stamp):
         distance = sim.getFloatArrayProperty(
             self.robotHandle, 'signal.distSignal', {'noError': True})
@@ -377,7 +418,7 @@ class MyRobot(LifecycleNode):
         angle = Float32()
         near = False
 
-        if self._mode in (Mode.AUTODOCKING, Mode.CHARGING, Mode.CHARGED):
+        if self._mode in (Mode.CHARGING, Mode.CHARGED):
             near = random.random() > 0.7  # pretend we sometimes see the dock strong
             strength.data = 0.5 + (0.5 if near else 0.0)
             angle.data = 0.0 if near else random.uniform(-math.pi/4, math.pi/4)
@@ -429,9 +470,14 @@ def main():
     except KeyboardInterrupt:
         node.get_logger().info('Keyboard interrupt received, shutting down early')
     finally:
+        node.running = False
+        try:
+            node.remove_proximity()
+        except Exception as e:
+            node.get_logger().warn(f'não consegui tirar os sensores da cena: {e}')
         executor.shutdown()
         node.destroy_node()
-        rclpy.shutdown()
+        rclpy.try_shutdown()
 
 if __name__ == '__main__':
     main()

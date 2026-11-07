@@ -334,6 +334,5 @@ lifecycle_manager:
       - myrobot
       - behaviour_server
       - cleaning_server
-      - autodocking_server
       - charging_server
       - charged_server

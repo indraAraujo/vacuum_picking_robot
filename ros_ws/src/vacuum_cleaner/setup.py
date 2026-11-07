@@ -29,7 +29,6 @@ setup(
             'behaviour_server = vacuum_cleaner.behaviour_server:main',
             'myrobot_server = vacuum_cleaner.myrobot_server:main',
             'cleaning_server = vacuum_cleaner.cleaning_server:main',
-            'autodocking_server = vacuum_cleaner.autodocking_server:main',
             'charging_server = vacuum_cleaner.charging_server:main',
             'charged_server = vacuum_cleaner.charged_server:main',
             'cmd_vel_mux = vacuum_cleaner.cmd_vel_mux:main',

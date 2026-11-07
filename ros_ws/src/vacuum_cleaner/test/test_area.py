@@ -72,7 +72,7 @@ def test_com_area_o_robo_fica_no_comodo():
 
 
 def test_fora_da_area_ele_volta_e_fica():
-    # Começa 0,3 m além da porta, como se o docking o tivesse empurrado.
+    # Começa 0,3 m além da porta, fora do cômodo.
     area = Area(SALA_1.rects)
     _, _, trajeto = _run(4.3, 1.5, math.pi, area, seconds=400.0)
     dentro = [k for k, (x, _) in enumerate(trajeto) if x <= 4.0]

@@ -48,8 +48,8 @@ Sem o laser, o Nav2 navega só pelo mapa que o SLAM já tinha montado: obstácul
 novos não são vistos.
 
 A limpeza também roda com o laser desligado: o cleaning_server acha as
-paredes no mapa, a partir da pose exata da simulação (vacuum_cleaner/
-map_sensors.py).
+paredes com os sensores de proximidade da cena, como no 4 - roomba
+(vacuum_cleaner/proximity.py).
 """
 
 import json
@@ -387,8 +387,8 @@ class VoiceCommander(Node):
         self.paused = False
         # Antes do start: a área precisa chegar antes da primeira leitura.
         self.set_area(room)
-        # O laser continua desligado: o cleaning_server acha as paredes no
-        # mapa, a partir da pose da simulação (map_sensors.py).
+        # O laser continua desligado: o cleaning_server acha as paredes com
+        # os sensores de proximidade da cena (vacuum_cleaner/proximity.py).
         if self.call_start_stop('start'):
             self.announce('limpando')
             self.get_logger().info(motivo)

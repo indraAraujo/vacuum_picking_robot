@@ -21,7 +21,6 @@ from std_msgs.msg import Float32, String
 from vacuum_cleaner_interfaces.srv import StartStop
 from .modes import Mode
 
-BATTERY_LOW = 0.25
 
 class BehaviourManager(LifecycleNode):
     def __init__(self):
@@ -155,7 +154,7 @@ class BehaviourManager(LifecycleNode):
         else:
             self._stop_requested = True
             if self._mode == Mode.CLEANING:
-                self._set_mode(Mode.AUTODOCKING, 'stop command received')
+                self._set_mode(Mode.CHARGED, 'stop command received')
 
         resp.accepted = True
         resp.message = f'Command {cmd} accepted.'
@@ -163,12 +162,9 @@ class BehaviourManager(LifecycleNode):
 
     # -------- Behaviour Rules --------
     def _tick(self):
-        # Apply transitions based on current telemetry
-        if self._mode == Mode.CLEANING and self._battery <= BATTERY_LOW:
-            self._set_mode(Mode.AUTODOCKING, f'battery low ({self._battery:.2f})')
-        elif self._mode == Mode.AUTODOCKING and self._near_base:
-            self._set_mode(Mode.CHARGING, 'charging base detected')
-        elif self._mode == Mode.CHARGING and self._battery >= 0.999:
+        # Sem autodocking: a bateria não interrompe a limpeza, que só termina
+        # com "stop". O CHARGING só é usado se alguém puser o robô nele.
+        if self._mode == Mode.CHARGING and self._battery >= 0.999:
             next_mode = Mode.CHARGED if self._stop_requested else Mode.CLEANING
             reason = 'fully charged + stop requested' if self._stop_requested else 'fully charged'
             self._set_mode(next_mode, reason)
@@ -205,7 +201,7 @@ def main():
     finally:
         executor.shutdown()
         node.destroy_node()
-        rclpy.shutdown()
+        rclpy.try_shutdown()
 
 if __name__ == '__main__':
     main()
