@@ -20,8 +20,10 @@ Cada cômodo tem:
 - ``goal``: ponto livre no meio do cômodo, longe de paredes e móveis, que vira
   o destino do Nav2;
 - ``areas``: retângulos ``(x_min, x_max, y_min, y_max)`` usados para dizer em
-  que cômodo o robô está. Cômodos em L, como o corredor, usam mais
-  de um retângulo.
+  que cômodo o robô está e para prender a limpeza ao cômodo: fora deles, o
+  cleaning_server enxerga uma parede virtual. Cômodos em L, como o corredor,
+  usam mais de um retângulo. As bordas seguem as paredes, e nas portas e
+  passagens abertas ficam na linha da parede.
 """
 
 import math
@@ -43,6 +45,15 @@ class Room:
     def goal(self):
         """Destino no frame map."""
         return to_map(*self.goal_scene)
+
+    @property
+    def area_flat(self):
+        """Retângulos no frame map, em lista: [x_min, x_max, y_min, y_max, ...]."""
+        flat = []
+        for x0, x1, y0, y1 in self.areas_scene:
+            (a, b), (c, d) = to_map(x0, y0), to_map(x1, y1)
+            flat += [a, c, b, d]
+        return flat
 
     def contains_scene(self, x, y):
         return any(x0 <= x <= x1 and y0 <= y <= y1

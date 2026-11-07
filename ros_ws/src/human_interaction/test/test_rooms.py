@@ -32,3 +32,14 @@ def test_todo_comodo_pode_ser_pedido(room):
                   f'limpar {room.article} {room.name}'):
         intent, args, _ = commands.parse(frase)
         assert args.get('local') == room.name, frase
+
+
+def test_area_da_limpeza_no_frame_map():
+    sala = rooms.BY_NAME['sala']
+    flat = sala.area_flat
+    assert len(flat) == 4 * len(sala.areas_scene)
+    x0, x1, y0, y1 = flat[:4]
+    assert x0 < x1 and y0 < y1
+    # O destino do Nav2 fica dentro da área que prende a varredura.
+    gx, gy = sala.goal
+    assert x0 <= gx <= x1 and y0 <= gy <= y1

@@ -253,12 +253,24 @@ ros2 service call /myRobot/start_stop vacuum_cleaner_interfaces/srv/StartStop '{
 ros2 service call /myRobot/start_stop vacuum_cleaner_interfaces/srv/StartStop '{command: "stop"}'
 ```
 
-Ou por voz: "limpar a sala" leva o robô até a sala pelo Nav2 e começa a varredura lá; "limpar tudo" começa onde ele está; "parar" encerra.
+Ou por voz: "limpar a sala" leva o robô até a sala pelo Nav2 e varre **só a sala**; "limpar aqui" varre só o cômodo onde ele está; "limpar tudo" varre a casa a partir de onde ele está; "parar" encerra.
+
+#### Limpar só um cômodo
+
+Para um cômodo, o modo de voz publica a área dele em `/myRobot/cleaning/area`, e o `cleaning_server` trata a borda dessa área como **parede virtual**. Portas e passagens abertas ficam fechadas para a varredura, e o robô não sai do cômodo. As áreas são os retângulos de `rooms.py`, os mesmos que dizem em que cômodo o robô está.
+
+A área vale para as duas fontes de sensores (mapa e laser) e continua valendo nos ciclos de bateria. "parar" e "limpar tudo" a liberam. Sem o modo de voz, dá para publicá-la à mão, em retângulos `[x_min, x_max, y_min, y_max, ...]` no frame `map` (lista vazia libera):
+
+```bash
+ros2 topic pub --once -w 0 /myRobot/cleaning/area std_msgs/msg/Float32MultiArray "{data: [-3.65, 0.85, -4.475, -0.875]}" --qos-durability transient_local
+```
+
+Se o robô estiver fora da área quando a limpeza começar, a parede virtual recua até ele e o acompanha de volta, sem deixá-lo se afastar mais.
 
 Pontos de atenção:
 
 - **Bateria:** a bateria simulada gasta 1 % por segundo de simulação limpando e carrega 2 % por segundo na base. Com 25 %, a máquina de estados manda o robô para a base, e com 100 % ela volta a limpar. Ajuste com os parâmetros `battery_drain` e `battery_charge` do `myrobot_server`.
-- **Limites da varredura:** ela é reativa e não fica presa ao cômodo. Pelas portas abertas, o robô pode seguir para outros cômodos.
+- **Docking parado:** com a bateria baixa, o `autodocking_server` agora deixa o robô parado onde está, e ele carrega ali. O sinal da base é sorteado pelo `myrobot_server`, sem relação com nenhuma base na cena. Andando atrás dele às cegas, o robô atravessava paredes e saía do cômodo. `drive_blind:=true` no `autodocking_server` traz o movimento antigo de volta.
 - **Folga das paredes:** as distâncias de parada foram aumentadas em relação ao original, porque a traseira deste robô gira num círculo maior (~0,23 m em torno do eixo). Como as paredes da cena não têm colisão, raspar nelas era atravessar. O custo é uma faixa de ~13 cm junto às paredes que não é varrida.
 - **Sensores pelo mapa:** só enxergam o que está no mapa. Objetos novos no chão e portas que o laser não registrou no mapeamento passam despercebidos. Sem mapa, o robô fica parado; com `cleaning_sensors:=lidar`, ele também para se o scan estiver vazio ou atrasado.
 - **Velocidade da simulação:** sem o laser, a cena roda várias vezes mais rápido que o tempo real. Por isso o `myrobot_server` aplica cada comando de velocidade assim que ele chega. Antes, ele esperava um timer de 50 ms de relógio, o que virava ~0,25 s de simulação com a velocidade antiga, e o robô passava do ponto de parada.
@@ -316,8 +328,8 @@ O SLAM e o Nav2 seguem o tempo da simulação (`/clock`), então continuam corre
 | --- | --- | --- |
 | `myrobot_server` | Ponte com o CoppeliaSim e telemetria simulada | Assina `/myRobot/cmd_vel_mux` e comanda os motores; publica `/clock`, `/scan`, `/myRobot/odom`, a TF `odom → base_link`, a bateria e o sinal da base |
 | `behaviour_server` | Máquina de estados de operação | Assina a bateria e o sinal da base; oferece `/myRobot/start_stop`; publica `/myRobot/behaviour/mode` |
-| `cleaning_server` | Varredura em faixas no modo `CLEANING` | Assina `/map` (ou `/scan`, com `cleaning_sensors:=lidar`) e `/myRobot/odom`; publica `/myRobot/cmd_vel` |
-| `autodocking_server` | Aproximação da base no modo `AUTODOCKING` | Lê o sinal da base e publica em `/myRobot/cmd_vel` |
+| `cleaning_server` | Varredura em faixas no modo `CLEANING` | Assina `/map` (ou `/scan`, com `cleaning_sensors:=lidar`), `/myRobot/odom` e a área `/myRobot/cleaning/area`; publica `/myRobot/cmd_vel` |
+| `autodocking_server` | Aproximação da base no modo `AUTODOCKING` | Fica parado por padrão; com `drive_blind:=true`, segue o sinal da base em `/myRobot/cmd_vel` |
 | `charging_server` | Reservado para a supervisão da carga | Assina a bateria e o modo |
 | `charged_server` | Reservado para tarefas com o robô na base | Assina o modo |
 | `debris_server` | Bananas no chão para aspirar | Espalha as bananas na cena e as tira quando o robô passa limpando; publica `/myRobot/debris` e oferece `/myRobot/debris/respawn` |
@@ -371,7 +383,7 @@ ros2 service call /lifecycle_manager/manage_nodes nav2_msgs/srv/ManageLifecycleN
 
 ## Limitações atuais
 
-- A limpeza e o docking não usam o Nav2: os dois publicam velocidades direto em `/myRobot/cmd_vel`. Durante a limpeza, a voz recusa comandos de deslocamento até você dizer "parar". O docking segue uma base simulada, sem relação com uma base real na cena.
+- A limpeza e o docking não usam o Nav2: os dois publicam velocidades direto em `/myRobot/cmd_vel`. Durante a limpeza, a voz recusa comandos de deslocamento até você dizer "parar". O docking não vai a base nenhuma: a base é simulada, e o robô carrega onde está.
 - A bateria e o sinal da base são simulados dentro do `myrobot_server`, sem relação com a posição real da base.
 - O lidar cobre 180° à frente do robô.
 - O mapa não cobre entrada, banheiro e quarto (portas fechadas na cena), e as paredes da cena não têm colisão.

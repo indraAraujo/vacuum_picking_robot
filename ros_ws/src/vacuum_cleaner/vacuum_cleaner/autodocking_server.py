@@ -6,6 +6,12 @@ autodocking_server
 - Operational: acts only when Mode == AUTODOCKING.
 - Reads docking signal (strength + relative angle) and drives toward the base.
 
+Parado por padrão (parâmetro ``drive_blind``): o sinal da base é sorteado
+pelo myrobot_server, sem relação com nenhuma base na cena, e as paredes da
+cena não têm colisão. Andando às cegas atrás dele, o robô atravessava paredes
+e saía do cômodo que estava limpando. Parado, ele "carrega" onde está e volta
+a limpar dali. ``drive_blind:=true`` traz de volta o movimento original.
+
 Real logic ideas:
 - Implement a visual servoing or IR beacon homing controller.
 - Add safety stop when obstacle detected.
@@ -27,6 +33,7 @@ class AutoDocking(LifecycleNode):
         super().__init__('autodocking_server')
         self._mode = Mode.IDLE
         self._last_strength = 0.0
+        self.declare_parameter('drive_blind', False)
         self._last_angle = 0.0
         self._cmd_pub = None
         self._strength_sub = None
@@ -38,6 +45,7 @@ class AutoDocking(LifecycleNode):
         self._shutdown_grace = 2.0
 
     def on_configure(self, _):
+        self._drive_blind = bool(self.get_parameter('drive_blind').value)
         qos = QoSProfile(depth=1)
         self._cmd_pub = self.create_publisher(Twist, '/myRobot/cmd_vel', qos)
         self._strength_sub = self.create_subscription(Float32, '/myRobot/charging_base/strengthSignal', self._on_strength, qos)
@@ -112,8 +120,9 @@ class AutoDocking(LifecycleNode):
         if self._mode != Mode.AUTODOCKING:
             return
         twist = Twist()
-        twist.angular.z = -0.5 * self._last_angle
-        twist.linear.x = 0.1 + 0.2 * self._last_strength
+        if self._drive_blind:
+            twist.angular.z = -0.5 * self._last_angle
+            twist.linear.x = 0.1 + 0.2 * self._last_strength
         if self._cmd_pub is not None:
             self._cmd_pub.publish(twist)
 

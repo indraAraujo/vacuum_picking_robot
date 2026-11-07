@@ -16,6 +16,13 @@ Os cinco sensores de proximidade do original vêm de uma de duas fontes
   limpeza (ver map_sensors.py);
 - ``lidar``: os pontos do /scan.
 
+Área de limpeza: ``/myRobot/cleaning/area`` (std_msgs/Float32MultiArray,
+latched) traz retângulos ``[x_min, x_max, y_min, y_max, ...]`` no frame map, e
+fora deles é parede virtual. É assim que "limpar a sala" fica só na sala: as
+portas e as passagens abertas viram parede. Lista vazia libera a casa toda.
+Se o robô estiver fora da área (o docking anda às cegas e pode empurrá-lo), a
+parede virtual recua até ele; quando ele volta para dentro, ela volta ao lugar.
+
 Segurança: as paredes da cena não têm colisão, então andar sem enxergar faria
 o robô atravessá-las. Sem mapa (ou sem scan recente, na fonte ``lidar``), o
 robô fica parado.
@@ -29,19 +36,21 @@ from rclpy.lifecycle import Node as LifecycleNode
 from rclpy.lifecycle import TransitionCallbackReturn
 from rclpy.qos import DurabilityPolicy, QoSProfile, qos_profile_sensor_data
 from rclpy.executors import SingleThreadedExecutor
-from std_msgs.msg import String
+from std_msgs.msg import Float32MultiArray, String
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import OccupancyGrid, Odometry
 from sensor_msgs.msg import LaserScan
 from .modes import Mode
 import tf2_ros
 from .coverage import AXLE_X, Coverage, scan_points, virtual_sensors
-from .map_sensors import MapSensors
+from .map_sensors import Area, MapSensors, area_readings
 
 #: Posição do laser em base_link (a mesma do static_transform_publisher).
 LASER_X = 0.003
 #: Scan mais velho que isto (tempo de simulação) faz o robô parar [s].
 SCAN_TIMEOUT = 0.5
+#: Folga da parede virtual quando o robô está fora da área [m].
+AREA_SLACK = 0.10
 
 
 class Cleaning(LifecycleNode):
@@ -54,6 +63,8 @@ class Cleaning(LifecycleNode):
         self._scan = None
         self._odom = None
         self._map = None
+        self._area = None
+        self._outside_warned = False
         self.declare_parameter('sensors', 'map')
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
@@ -77,8 +88,10 @@ class Cleaning(LifecycleNode):
             self.create_subscription(String, '/myRobot/behaviour/mode', self._on_mode, qos),
             self.create_subscription(Odometry, '/myRobot/odom', self._on_odom, 10),
         ]
+        latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self._subs.append(self.create_subscription(
+            Float32MultiArray, '/myRobot/cleaning/area', self._on_area, latched))
         if self.source == 'map':
-            latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
             self._subs.append(self.create_subscription(
                 OccupancyGrid, '/map', self._on_map, latched))
         else:
@@ -164,6 +177,36 @@ class Cleaning(LifecycleNode):
     def _on_map(self, msg: OccupancyGrid):
         self._map = MapSensors.from_msg(msg)
 
+    def _on_area(self, msg: Float32MultiArray):
+        try:
+            self._area = Area.from_flat(msg.data)
+        except ValueError as erro:
+            self.get_logger().error(f'área de limpeza inválida: {erro}')
+            return
+        self._outside_warned = False
+        if self._area is None:
+            self.get_logger().info('área de limpeza: a casa toda')
+        else:
+            self.get_logger().info('área de limpeza: ' + ', '.join(
+                f'x {x0:+.2f}..{x1:+.2f} y {y0:+.2f}..{y1:+.2f}'
+                for x0, x1, y0, y1 in self._area.rects))
+
+    def _area_at(self, x, y):
+        """A área, alargada até o robô se ele estiver fora dela."""
+        area = self._area
+        if area is None:
+            return None
+        fora = area.follow(x, y, AREA_SLACK)
+        if fora <= 0.0 and self._outside_warned:
+            self.get_logger().info('o robô voltou para a área de limpeza')
+            self._outside_warned = False
+        elif fora > 0.0 and not self._outside_warned:
+            self.get_logger().warn(
+                f'o robô está {fora:.2f} m fora da área de limpeza: '
+                'a parede virtual recua até ele')
+            self._outside_warned = True
+        return area
+
     # ------------------------------------------------------------------ ciclo
     def _publish(self, lin, rot):
         if self.pub_cmd is None:
@@ -207,7 +250,8 @@ class Cleaning(LifecycleNode):
             if x is None:
                 self._blind('esperando a transformação map->odom')
                 return None
-            return self._map.readings(x, y, theta), x, y, theta
+            area = self._area_at(x, y)
+            return self._map.readings(x, y, theta, area), x, y, theta
         if self._scan is None:
             self._blind('esperando /scan')
             return None
@@ -221,7 +265,13 @@ class Cleaning(LifecycleNode):
             self._blind('o scan está vazio (lidar desligado?)')
             return None
         theta = 2.0 * math.atan2(pose.orientation.z, pose.orientation.w)
-        return virtual_sensors(points), pose.position.x, pose.position.y, theta
+        readings = virtual_sensors(points)
+        no_mapa = self._map_pose(pose) if self._area is not None else None
+        if no_mapa is not None:
+            area = self._area_at(no_mapa[0], no_mapa[1])
+            fronteira = area_readings(area, *no_mapa)
+            readings = {k: min(v, fronteira[k]) for k, v in readings.items()}
+        return readings, pose.position.x, pose.position.y, theta
 
     def _tick(self):
         if self._mode != Mode.CLEANING:
