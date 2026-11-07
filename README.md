@@ -14,10 +14,14 @@ O projeto usa ROS 2 Jazzy e simula o robô no CoppeliaSim. Hoje, esta branch tem
 │   │   ├── launch/                 # vacuum_cleaner.launch.py
 │   │   └── vacuum_cleaner/         # Código dos nós
 │   ├── vacuum_cleaner_interfaces/  # Serviço StartStop
-│   └── human_interaction/          # Comandos de voz (Vosk) e cômodos da casa
+│   ├── human_interaction/          # Comandos de voz (Vosk) e cômodos da casa
+│   └── picking_robot/              # O robô com a garra do youBot no lugar do lidar
 └── simulation/
-    └── scene_house.ttt             # Cena do robô no CoppeliaSim
+    ├── scene_house.ttt             # Cena do robô no CoppeliaSim
+    └── scene_house_arm.ttt         # A mesma casa, com o robô com garra (gerada pelo picking_robot)
 ```
+
+O robô com garra tem o próprio README: [ros_ws/src/picking_robot/README.md](ros_ws/src/picking_robot/README.md).
 
 ## Pré-requisitos
 
@@ -63,7 +67,7 @@ Refaça esse passo sempre que alterar o arquivo `.srv`.
 
 ```bash
 source ~/vacuum_interfaces_ws/install/setup.bash
-colcon build --symlink-install --packages-select vacuum_cleaner human_interaction
+colcon build --symlink-install --packages-select vacuum_cleaner human_interaction picking_robot
 ```
 
 Depois de editar arquivos em `config/` ou `launch/`, compile de novo para que a alteração valha.
