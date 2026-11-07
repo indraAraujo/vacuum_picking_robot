@@ -51,6 +51,7 @@ from nav2_msgs.action import NavigateToPose
 from rcl_interfaces.srv import GetParameters
 import rclpy
 from rclpy.action import ActionClient
+from rclpy.clock import Clock
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile
@@ -78,6 +79,9 @@ class VoiceCommander(Node):
         self.declare_parameter('lidar', False)
         self.declare_parameter('lidar_service', '/myRobot/lidar/enable')
         self.declare_parameter('slam', '/slam_toolbox')
+        # Quanto esperar pelo SLAM antes de concluir que ele não está rodando
+        # (relógio de parede, em segundos).
+        self.declare_parameter('slam_wait', 10.0)
 
         self.map_frame = self.get_parameter('map_frame').value
         self.base_frame = self.get_parameter('base_frame').value
@@ -114,6 +118,7 @@ class VoiceCommander(Node):
         self.lidar_done = {'slam': False, 'lidar': False}
         self.paused_slam = False      # fui eu que pausei o SLAM?
         self.lidar_pending = False
+        self.lidar_since = Clock().now()
         if self.lidar_off:
             self.lidar_timer = self.create_timer(1.0, self.switch_lidar_off)
 
@@ -136,9 +141,12 @@ class VoiceCommander(Node):
         if not self.lidar_done['slam']:
             if not (self.slam_param_cli.service_is_ready()
                     and self.pause_cli.service_is_ready()):
-                self.get_logger().info(
-                    'esperando o SLAM Toolbox para desligar o lidar',
-                    throttle_duration_sec=10.0)
+                espera = (Clock().now() - self.lidar_since).nanoseconds * 1e-9
+                if espera < self.get_parameter('slam_wait').value:
+                    return
+                # Projeto com mapa pronto (slam:=false): não há o que pausar.
+                self.get_logger().info('SLAM não está rodando: uso o mapa pronto')
+                self.lidar_done['slam'] = True
                 return
             self.lidar_pending = True
             self.slam_param_cli.call_async(self.slam_paused_request()) \

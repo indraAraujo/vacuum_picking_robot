@@ -16,7 +16,7 @@ from human_interaction import commands
     ('pode limpar tudo agora', 'limpar_tudo'),
     ('aspirador, mapear o ambiente', 'mapear'),
     ('volta para a base', 'voltar_base'),
-    ('vai para o quarto', 'ir_para'),
+    ('vai para o lavabo', 'ir_para'),
     # O imperativo é como se manda em alguém; faltava, e era a forma mais
     # natural de pedir ("vá para a cozinha" ficava sem casar com nada).
     ('vá para a cozinha', 'ir_para'),
@@ -40,9 +40,9 @@ def test_intencao_reconhecida(frase, intencao):
 
 @pytest.mark.parametrize('frase, local', [
     ('limpar a cozinha', 'cozinha'),
-    ('aspirar o banheiro', 'banheiro'),
+    ('aspirar o lavabo', 'lavabo'),
     ('limpa a casa toda', 'casa toda'),
-    ('vai para a entrada', 'entrada'),
+    ('vai para o corredor', 'corredor'),
     ('vá para a sala de jantar', 'sala de jantar'),
     ('limpar a sala de estar', 'sala'),
 ])

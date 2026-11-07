@@ -9,6 +9,7 @@ real robot logic while keeping the same topic/service contracts.
 """
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.conditions import IfCondition, UnlessCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.parameter_descriptions import ParameterValue
 from launch.launch_description_sources import PythonLaunchDescriptionSource
@@ -29,10 +30,18 @@ def generate_launch_description():
     nav2_launch = os.path.join(
         get_package_share_directory('nav2_bringup'), 'launch', 'navigation_launch.py')
 
+    slam = LaunchConfiguration('slam')
+
     return LaunchDescription([
         DeclareLaunchArgument(
             'sim_port', default_value='23000',
             description='Porta da ZeroMQ Remote API do CoppeliaSim'),
+        DeclareLaunchArgument(
+            'slam', default_value='false',
+            description='true mapeia com o SLAM Toolbox; false usa o mapa salvo em map'),
+        DeclareLaunchArgument(
+            'map', default_value=os.path.join(pkg_dir, 'maps', 'casa.yaml'),
+            description='Mapa carregado quando slam:=false'),
         # O robô recebe a saída do mux: o teleop tem prioridade sobre o resto.
         Node(package='vacuum_cleaner', executable='myrobot_server', name='myrobot', output='screen',
              remappings=[('/myRobot/cmd_vel', '/myRobot/cmd_vel_mux')],
@@ -61,8 +70,41 @@ def generate_launch_description():
                        '--frame-id', 'base_link', '--child-frame-id', 'laser_link'],
             parameters=[{'use_sim_time': True}],
         ),
+        # Mapa pronto (slam:=false): o map_server publica o mapa salvo, e a TF
+        # map -> odom é a identidade, porque a odometria vem da própria cena e
+        # o frame map é a pose inicial do robô, a mesma do mapeamento.
+        Node(
+            package='nav2_map_server',
+            executable='map_server',
+            name='map_server',
+            output='screen',
+            condition=UnlessCondition(slam),
+            parameters=[{'yaml_filename': LaunchConfiguration('map'),
+                         'use_sim_time': True}],
+        ),
+        Node(
+            package='nav2_lifecycle_manager',
+            executable='lifecycle_manager',
+            name='lifecycle_manager_map',
+            output='screen',
+            condition=UnlessCondition(slam),
+            parameters=[{'autostart': True, 'node_names': ['map_server'],
+                         'use_sim_time': True}],
+        ),
+        Node(
+            package='tf2_ros',
+            executable='static_transform_publisher',
+            name='map_to_odom',
+            output='screen',
+            condition=UnlessCondition(slam),
+            arguments=['--frame-id', 'map', '--child-frame-id', 'odom'],
+            parameters=[{'use_sim_time': True}],
+        ),
+        # Mapeamento (slam:=true): o SLAM Toolbox constrói o mapa e a TF
+        # map -> odom enquanto o robô anda.
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(slam_launch),
+            condition=IfCondition(slam),
             launch_arguments={
                 'slam_params_file': os.path.join(
                     pkg_dir, 'config', 'mapper_params_online_async.yaml'),

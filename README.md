@@ -86,7 +86,15 @@ source install/setup.bash
 ros2 launch vacuum_cleaner vacuum_cleaner.launch.py
 ```
 
-O launch sobe os seis nós do robô, o SLAM Toolbox e o Nav2. O sistema está pronto quando a mensagem `Managed nodes are active` aparecer duas vezes: uma para os nós do robô e outra para o Nav2.
+O launch sobe os seis nós do robô, o Nav2 e o **mapa pronto** da casa (`ros_ws/src/vacuum_cleaner/maps/casa.yaml`), publicado pelo `map_server`. O robô já começa conhecendo o mapa. O sistema está pronto quando a mensagem `Managed nodes are active` aparecer três vezes: mapa, nós do robô e Nav2.
+
+O robô precisa começar na posição da cena salva (`scene_house.ttt`), porque o mapa usa essa posição como origem.
+
+Para mapear com o SLAM Toolbox em vez de usar o mapa salvo, por exemplo depois de mudar a cena:
+
+```bash
+ros2 launch vacuum_cleaner vacuum_cleaner.launch.py slam:=true
+```
 
 **4. Abra o RViz (opcional):**
 
@@ -116,34 +124,35 @@ ros2 launch vacuum_cleaner teleop.launch.py
 
 Com a janela `teleop` em foco, use `i`/`,` para andar para a frente e para trás, `j`/`l` para girar, `k` para parar e `q`/`z` para mudar a velocidade. O teclado tem prioridade sobre o Nav2 e sobre os nós de limpeza.
 
-### Continuar o mapeamento
+### Refazer o mapa
 
-O SLAM Toolbox constrói o mapa enquanto o robô anda, e o mapa em construção fica só na memória. Para completar o mapa:
+O mapa salvo foi gerado automaticamente pelo `house_mapper`: com o SLAM ligado, ele leva o robô a cada cômodo de `rooms.py` pelo Nav2, dá uma volta de 360° em cada um (o lidar só vê 180° à frente) e salva o mapa e o estado do SLAM. Para refazer:
 
-1. Mantenha o launch principal aberto e dirija o robô pelo teclado até as áreas que faltam.
-2. Gire o robô nos cômodos e passe perto dos cantos, porque o lidar só cobre 180° à frente.
-3. Acompanhe o resultado no RViz.
-4. Salve o mapa em outro terminal, com o ambiente carregado, na raiz do repositório:
+1. Suba o projeto com o SLAM: `ros2 launch vacuum_cleaner vacuum_cleaner.launch.py slam:=true`
+2. Em outro terminal, na raiz do repositório:
 
    ```bash
-   ros2 run nav2_map_server map_saver_cli -f ros_ws/src/vacuum_cleaner/maps/casa --ros-args -p use_sim_time:=true
+   ros2 run human_interaction house_mapper --ros-args \
+     -p output:=$PWD/ros_ws/src/vacuum_cleaner/maps/casa -p use_sim_time:=true
    ```
 
-O comando sobrescreve `casa.pgm` e `casa.yaml`. Salve antes de fechar o launch.
+3. Recompile o `vacuum_cleaner` para instalar o mapa novo e suba o projeto de novo, sem `slam:=true`.
 
-Esses arquivos são apenas uma imagem do mapa: o SLAM não consegue continuar a partir deles. Ao reiniciar o launch, o mapeamento recomeça do zero. Para retomar em outra sessão, salve também o estado do SLAM antes de fechar:
+Na simulação sem janela, o percurso pelos cinco cômodos levou cerca de 8 minutos. Cômodo que não dá para alcançar é anotado e pulado depois de `goal_timeout` (padrão: 600 s), então cada cômodo inalcançável soma até 10 minutos.
 
-```bash
-ros2 service call /slam_toolbox/serialize_map slam_toolbox/srv/SerializePoseGraph "{filename: 'casa_slam'}"
-```
-
-Esse comando grava `casa_slam.data` e `casa_slam.posegraph` na pasta em que o launch foi iniciado. Na sessão seguinte, com a cena reiniciada e o robô na posição inicial, suba o launch a partir da mesma pasta e carregue esse estado:
+Também dá para completar o mapa à mão: suba com `slam:=true`, dirija pelo teclado até as áreas que faltam e salve com:
 
 ```bash
-ros2 service call /slam_toolbox/deserialize_map slam_toolbox/srv/DeserializePoseGraph "{filename: 'casa_slam', match_type: 1}"
+ros2 run nav2_map_server map_saver_cli -f ros_ws/src/vacuum_cleaner/maps/casa --ros-args -p use_sim_time:=true
 ```
 
-O `match_type: 1` retoma o mapa a partir do ponto em que o mapeamento começou.
+Salve antes de fechar o launch, porque o mapa em construção fica só na memória. O comando sobrescreve `casa.pgm` e `casa.yaml`.
+
+#### Cobertura do mapa atual
+
+O mapa cobre a **sala de jantar, a cozinha, a sala, o lavabo e o corredor**. Entrada, banheiro e quarto ficaram de fora porque, na cena, as portas deles estão **fechadas**: o laser vê as portas como parede, e o Nav2 não tem por onde entrar. Para incluí-los, abra essas portas na cena, refaça o mapa e devolva os três cômodos em `rooms.py` (as coordenadas estão comentadas lá).
+
+As paredes da cena não têm colisão física (`respondable` desligado). Com o mapa, o Nav2 não manda o robô por elas, mas comandos diretos, como os do teclado ou da limpeza, ainda podem atravessá-las.
 
 ### Comandos de voz
 
@@ -158,14 +167,14 @@ O microfone já fica ouvindo. Fale, por exemplo, **"vá para a cozinha"**: o rob
 | Comando | O que o robô faz |
 |---|---|
 | "vá para a cozinha" | Vai até o cômodo |
-| "limpar o quarto" | Vai até o cômodo e anuncia (a limpeza em si ainda não está ligada à voz) |
+| "limpar a cozinha" | Vai até o cômodo e anuncia (a limpeza em si ainda não está ligada à voz) |
 | "voltar para a base" | Volta ao ponto onde começou |
 | "limpar tudo", "mapear a casa" | Percorre todos os cômodos, um a um |
 | "pausar" / "continuar" | Para sem perder a fila e retoma de onde parou |
 | "parar" | Cancela tudo e para onde está |
 | "como está" | Diz onde está, para onde vai e quanto falta |
 
-Os cômodos são: **sala de jantar, cozinha, sala, entrada, lavabo, banheiro, quarto e corredor**.
+Os cômodos são: **sala de jantar, cozinha, sala, lavabo e corredor**, os que estão no mapa (veja "Cobertura do mapa atual").
 
 O robô transcreve tudo o que ouve, mas só age quando a frase é um comando. As outras falas aparecem no log como `ouvido, mas não é tarefa minha`.
 
@@ -195,8 +204,8 @@ Para poupar processamento, o modo de voz **desliga o laser** na cena enquanto es
 
 Junto com o laser:
 
-- o SLAM Toolbox **pausa** as medições novas, e o mapa fica congelado como estava;
-- o `myrobot_server` publica um `/scan` vazio, sem nenhum eco. Sem ele, a TF `map → odom` do SLAM envelhece, o Nav2 perde a pose do robô e o `collision_monitor` para o robô por falta de dados.
+- o `myrobot_server` publica um `/scan` vazio, sem nenhum eco. Sem ele, o `collision_monitor` para o robô por falta de dados;
+- se o projeto estiver com `slam:=true`, o SLAM Toolbox **pausa** as medições novas e o mapa fica congelado. O scan vazio também mantém viva a TF `map → odom` do SLAM, que ele carimba com o horário do último scan.
 
 Com o laser desligado, o Nav2 navega só pelo mapa já construído e **não vê obstáculos novos**. Por isso, mapeie a casa antes de usar a voz. Para manter o laser ligado:
 
@@ -265,15 +274,18 @@ O SLAM e o Nav2 seguem o tempo da simulação (`/clock`), então continuam corre
 | `voice_listener` | Microfone → texto, com o Vosk offline em português | Publica `/myRobot/voice/transcript` |
 | `command_parser` | Texto → comando (intenção e lugar) | Assina a transcrição; publica `/myRobot/voice/command` |
 | `voice_commander` | Comando → destino no Nav2 | Assina o comando; usa a ação `/navigate_to_pose`; publica `/myRobot/house/room` e `/myRobot/house/task` |
-| `slam_toolbox` | Mapeamento e localização | Assina `/scan`; publica `/map` e a TF `map → odom` |
+| `map_server` | Mapa pronto (padrão) | Publica `/map` a partir de `maps/casa.yaml`; a TF `map → odom` é fixa |
+| `slam_toolbox` | Mapeamento (`slam:=true`) | Assina `/scan`; publica `/map` e a TF `map → odom` |
+| `house_mapper` | Mapeamento automático | Visita os cômodos pelo Nav2, gira em cada um e salva o mapa |
 | Nav2 | Planejamento e controle de trajetória | Oferece `/navigate_to_pose`; a saída do `collision_monitor` vai para `/myRobot/cmd_vel` |
 
 ### Ciclos de vida
 
-Dois gerenciadores cuidam da inicialização, e ambos usam `config/nav2_params.yaml`:
+Três gerenciadores cuidam da inicialização:
 
-- `/lifecycle_manager`: nós do robô.
+- `/lifecycle_manager`: nós do robô (lista em `config/nav2_params.yaml`).
 - `/lifecycle_manager_navigation`: nós do Nav2.
+- `/lifecycle_manager_map`: o `map_server`, quando o projeto usa o mapa pronto.
 
 O ciclo de vida só define se um nó está ativo. O que o robô faz em cada momento é decidido pelo modo publicado pelo `behaviour_server`.
 
@@ -311,6 +323,7 @@ ros2 service call /lifecycle_manager/manage_nodes nav2_msgs/srv/ManageLifecycleN
 - A limpeza e o docking ainda não usam o Nav2: esses nós publicam velocidades diretamente em `/myRobot/cmd_vel`. Não mande goals nos modos `CLEANING` e `AUTODOCKING`, porque os comandos se misturam.
 - A bateria e o sinal da base são simulados dentro do `myrobot_server`, sem relação com a posição real da base.
 - O lidar cobre 180° à frente do robô.
+- O mapa não cobre entrada, banheiro e quarto (portas fechadas na cena), e as paredes da cena não têm colisão.
 
 ## Referências
 

@@ -100,10 +100,7 @@ PLACES = {
     'cozinha': 'cozinha',
     'estar': 'sala',
     'sala': 'sala',
-    'entrada': 'entrada',
     'lavabo': 'lavabo',
-    'banheiro': 'banheiro',
-    'quarto': 'quarto',
     'corredor': 'corredor',
     'casa': 'casa toda',
 }

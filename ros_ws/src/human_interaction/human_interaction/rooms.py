@@ -20,7 +20,7 @@ Cada cômodo tem:
 - ``goal``: ponto livre no meio do cômodo, longe de paredes e móveis, que vira
   o destino do Nav2;
 - ``areas``: retângulos ``(x_min, x_max, y_min, y_max)`` usados para dizer em
-  que cômodo o robô está. Cômodos em L, como o quarto e o corredor, usam mais
+  que cômodo o robô está. Cômodos em L, como o corredor, usam mais
   de um retângulo.
 """
 
@@ -50,16 +50,19 @@ class Room:
 
 
 #: Os cômodos, na ordem em que o robô percorre a casa ("limpar tudo").
+#:
+#: Entrada, banheiro e quarto ficam de fora: na cena eles estão atrás de portas
+#: fechadas, o laser vê as portas como parede e esses cômodos não entram no
+#: mapa. Para devolvê-los, abra as portas na cena, remapeie e acrescente aqui:
+#:   Room('entrada', 'a', (6.70, -0.80), [(4.40, 8.90, -1.70, -0.10)])
+#:   Room('banheiro', 'o', (7.30, 4.50), [(6.00, 8.90, 3.50, 5.50)])
+#:   Room('quarto', 'o', (9.70, 2.80), [(6.00, 12.60, 1.30, 3.50),
+#:                                      (8.90, 12.60, 3.50, 5.50)])
 ROOMS = (
     Room('sala de jantar', 'a', (2.80, 0.30), [(-0.10, 4.40, -0.10, 1.40)]),
     Room('cozinha', 'a', (3.20, 4.20), [(-0.10, 4.40, 1.40, 5.50)]),
     Room('sala', 'a', (3.00, -1.60), [(-0.10, 4.40, -3.70, -0.10)]),
-    Room('entrada', 'a', (6.70, -0.80), [(4.40, 8.90, -1.70, -0.10)]),
     Room('lavabo', 'o', (5.15, 3.70), [(4.40, 5.90, 3.00, 5.50)]),
-    Room('banheiro', 'o', (7.30, 4.50), [(6.00, 8.90, 3.50, 5.50)]),
-    # O quarto é em L: o hall entre as portas e a parte com a cama.
-    Room('quarto', 'o', (9.70, 2.80), [(6.00, 12.60, 1.30, 3.50),
-                                        (8.90, 12.60, 3.50, 5.50)]),
     # O corredor também: a faixa leste-oeste e o trecho em frente ao lavabo.
     Room('corredor', 'o', (6.20, 0.70), [(4.40, 12.60, -0.10, 1.30),
                                           (4.40, 6.00, 1.30, 3.00)]),

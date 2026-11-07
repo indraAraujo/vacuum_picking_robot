@@ -28,6 +28,7 @@ setup(
             'command_parser = human_interaction.command_parser:main',
             'command_console = human_interaction.command_console:main',
             'voice_commander = human_interaction.voice_commander:main',
+            'house_mapper = human_interaction.house_mapper:main',
         ],
     },
 )
