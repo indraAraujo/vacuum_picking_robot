@@ -14,7 +14,7 @@ O projeto usa ROS 2 Jazzy e simula o robô no CoppeliaSim. Hoje, esta branch tem
 │   │   ├── launch/                 # vacuum_cleaner.launch.py
 │   │   └── vacuum_cleaner/         # Código dos nós
 │   ├── vacuum_cleaner_interfaces/  # Serviço StartStop
-│   └── human_interaction/          # Pacote de interação (esqueleto)
+│   └── human_interaction/          # Comandos de voz (Vosk) e cômodos da casa
 └── simulation/
     └── scene_house.ttt             # Cena do robô no CoppeliaSim
 ```
@@ -35,6 +35,15 @@ O projeto usa ROS 2 Jazzy e simula o robô no CoppeliaSim. Hoje, esta branch tem
   pip install --user coppeliasim-zmqremoteapi-client
   ```
 
+- Para os comandos de voz: PortAudio, Vosk e sounddevice, também no Python do sistema (o `ros2 run` não usa ambientes virtuais):
+
+  ```bash
+  sudo apt install libportaudio2
+  /usr/bin/python3 -m pip install --user --break-system-packages vosk sounddevice
+  ```
+
+  Na primeira execução, o Vosk baixa o modelo pequeno de português (31 MB) para `~/.cache/vosk/`.
+
 ## Como compilar
 
 Rode os comandos na raiz do repositório.
@@ -54,7 +63,7 @@ Refaça esse passo sempre que alterar o arquivo `.srv`.
 
 ```bash
 source ~/vacuum_interfaces_ws/install/setup.bash
-colcon build --symlink-install --packages-select vacuum_cleaner
+colcon build --symlink-install --packages-select vacuum_cleaner human_interaction
 ```
 
 Depois de editar arquivos em `config/` ou `launch/`, compile de novo para que a alteração valha.
@@ -136,6 +145,75 @@ ros2 service call /slam_toolbox/deserialize_map slam_toolbox/srv/DeserializePose
 
 O `match_type: 1` retoma o mapa a partir do ponto em que o mapeamento começou.
 
+### Comandos de voz
+
+Com o projeto rodando, abra outro terminal, carregue o ambiente e rode:
+
+```bash
+ros2 launch human_interaction voice.launch.py
+```
+
+O microfone já fica ouvindo. Fale, por exemplo, **"vá para a cozinha"**: o robô transcreve a frase, interpreta o comando e manda o destino para o Nav2.
+
+| Comando | O que o robô faz |
+|---|---|
+| "vá para a cozinha" | Vai até o cômodo |
+| "limpar o quarto" | Vai até o cômodo e anuncia (a limpeza em si ainda não está ligada à voz) |
+| "voltar para a base" | Volta ao ponto onde começou |
+| "limpar tudo", "mapear a casa" | Percorre todos os cômodos, um a um |
+| "pausar" / "continuar" | Para sem perder a fila e retoma de onde parou |
+| "parar" | Cancela tudo e para onde está |
+| "como está" | Diz onde está, para onde vai e quanto falta |
+
+Os cômodos são: **sala de jantar, cozinha, sala, entrada, lavabo, banheiro, quarto e corredor**.
+
+O robô transcreve tudo o que ouve, mas só age quando a frase é um comando. As outras falas aparecem no log como `ouvido, mas não é tarefa minha`.
+
+Opções úteis:
+
+```bash
+ros2 launch human_interaction voice.launch.py console:=1        # Digitar as frases, sem microfone
+ros2 launch human_interaction voice.launch.py wake_word:=robo   # Só obedece depois de "robô"
+ros2 launch human_interaction voice.launch.py device:=8         # Outra entrada de áudio
+ros2 launch human_interaction voice.launch.py lidar:=true       # Manter o laser ligado
+ros2 run human_interaction voice_listener --ros-args -p list_devices:=true   # Listar entradas
+```
+
+Para acompanhar a execução:
+
+```bash
+ros2 topic echo /myRobot/voice/transcript   # O que foi ouvido
+ros2 topic echo /myRobot/voice/command      # O comando interpretado
+ros2 topic echo /myRobot/house/room         # O cômodo atual
+ros2 topic echo /myRobot/house/task         # A tarefa atual
+ros2 topic echo /myRobot/voice/level        # Nível do microfone (acima de -40 dBFS ao falar)
+```
+
+#### O lidar no modo de voz
+
+Para poupar processamento, o modo de voz **desliga o laser** na cena enquanto estiver rodando e o religa ao sair (Ctrl+C). O laser é o que mais pesa: sem ele, a cena sem janela passou de cerca de 0,4 para cerca de 7 vezes o tempo real.
+
+Junto com o laser:
+
+- o SLAM Toolbox **pausa** as medições novas, e o mapa fica congelado como estava;
+- o `myrobot_server` publica um `/scan` vazio, sem nenhum eco. Sem ele, a TF `map → odom` do SLAM envelhece, o Nav2 perde a pose do robô e o `collision_monitor` para o robô por falta de dados.
+
+Com o laser desligado, o Nav2 navega só pelo mapa já construído e **não vê obstáculos novos**. Por isso, mapeie a casa antes de usar a voz. Para manter o laser ligado:
+
+```bash
+ros2 launch human_interaction voice.launch.py lidar:=true
+```
+
+O laser também pode ser ligado e desligado à mão:
+
+```bash
+ros2 service call /myRobot/lidar/enable std_srvs/srv/SetBool "{data: false}"
+```
+
+Ao subir, o `myrobot_server` sempre religa o laser, caso uma sessão anterior tenha terminado sem religá-lo.
+
+Os destinos e os limites dos cômodos ficam em `ros_ws/src/human_interaction/human_interaction/rooms.py`, no referencial da cena. Se o robô começar em outro ponto da cena, atualize `SCENE_ORIGIN` nesse arquivo.
+
 ### Iniciar e parar a limpeza
 
 ```bash
@@ -184,6 +262,9 @@ O SLAM e o Nav2 seguem o tempo da simulação (`/clock`), então continuam corre
 | `charging_server` | Reservado para a supervisão da carga | Assina a bateria e o modo |
 | `charged_server` | Reservado para tarefas com o robô na base | Assina o modo |
 | `cmd_vel_mux` | Prioridade do teclado sobre os demais comandos | Assina `/myRobot/cmd_vel_teleop` e `/myRobot/cmd_vel`; publica `/myRobot/cmd_vel_mux`, que o `myrobot_server` assina |
+| `voice_listener` | Microfone → texto, com o Vosk offline em português | Publica `/myRobot/voice/transcript` |
+| `command_parser` | Texto → comando (intenção e lugar) | Assina a transcrição; publica `/myRobot/voice/command` |
+| `voice_commander` | Comando → destino no Nav2 | Assina o comando; usa a ação `/navigate_to_pose`; publica `/myRobot/house/room` e `/myRobot/house/task` |
 | `slam_toolbox` | Mapeamento e localização | Assina `/scan`; publica `/map` e a TF `map → odom` |
 | Nav2 | Planejamento e controle de trajetória | Oferece `/navigate_to_pose`; a saída do `collision_monitor` vai para `/myRobot/cmd_vel` |
 

@@ -18,6 +18,7 @@
   <exec_depend>nav_msgs</exec_depend>
   <exec_depend>vacuum_cleaner_interfaces</exec_depend>
   <exec_depend>rosgraph_msgs</exec_depend>
+  <exec_depend>std_srvs</exec_depend>
   <exec_depend>nav2_lifecycle_manager</exec_depend>
   <exec_depend>nav2_bringup</exec_depend>
   <exec_depend>slam_toolbox</exec_depend>

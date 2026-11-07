@@ -14,6 +14,7 @@ from sensor_msgs.msg import BatteryState, LaserScan
 from geometry_msgs.msg import Twist, TransformStamped
 from nav_msgs.msg import Odometry
 from rosgraph_msgs.msg import Clock
+from std_srvs.srv import SetBool
 from rclpy.time import Time
 from .modes import Mode
 from coppeliasim_zmqremoteapi_client import *
@@ -26,12 +27,18 @@ FORWARD_YAW_OFFSET = math.pi / 2.0
 MOTOR_SIGN = -1.0
 # Tempo de simulação sem comando até parar as rodas.
 CMD_TIMEOUT = 0.6
+# Período do scan vazio publicado com o laser desligado [s de simulação].
+EMPTY_SCAN_PERIOD = 0.1
 
 class MyRobot(LifecycleNode):
     def __init__(self):
         super().__init__('myrobot')
-        
-        self.client = RemoteAPIClient()
+
+        # Porta da ZeroMQ Remote API. Outra porta permite rodar uma segunda
+        # instância do CoppeliaSim (por exemplo, sem janela, para testes).
+        self.declare_parameter('sim_port', 23000)
+        self.sim_port = int(self.get_parameter('sim_port').value)
+        self.client = RemoteAPIClient(port=self.sim_port)
         self.sim = self.client.getObject('sim')
 
         self._battery = 1.0
@@ -87,10 +94,18 @@ class MyRobot(LifecycleNode):
         self.density = min(5.0, max(
             0.1, float(self.get_parameter('scanning_density').value)))
         laser_handle = self.sim.getObject('/myRobot/LaserScanner_2D')
-        laser_script = self.sim.getScript(
+        self.laser_script = self.sim.getScript(
             self.sim.scripttype_childscript, laser_handle)
         self.sim.setScriptSimulationParameter(
-            laser_script, 'scanningDensity', self.density)
+            self.laser_script, 'scanningDensity', self.density)
+
+        # O laser é o que mais pesa na simulação. Este serviço liga e desliga
+        # o script dele na cena (o modo de voz desliga). Ao subir, ele é
+        # sempre religado, caso uma sessão anterior o tenha deixado desligado.
+        self.lidar_enabled = True
+        self._last_empty_scan = -1.0
+        self._set_laser_script(True)
+        self.create_service(SetBool, '/myRobot/lidar/enable', self._on_lidar_enable)
 
         self.laserscan_msg = LaserScan()
         self.laserscan_msg.header.frame_id = 'laser_link'
@@ -100,10 +115,32 @@ class MyRobot(LifecycleNode):
         self.laserscan_msg.range_max = 10.0
 
         # O cliente ZMQ não pode ser compartilhado entre threads.
-        self.reader_client = RemoteAPIClient()
+        self.reader_client = RemoteAPIClient(port=self.sim_port)
         self.reader_sim = self.reader_client.getObject('sim')
         self.reader = threading.Thread(target=self._on_robot_pose, daemon=True)
         self.reader.start()
+
+    # ---------------- Lidar ----------------
+    def _set_laser_script(self, enabled):
+        self.sim.setScriptInt32Param(
+            self.laser_script, self.sim.scriptintparam_enabled, 1 if enabled else 0)
+
+    def _on_lidar_enable(self, req, resp):
+        try:
+            self._set_laser_script(req.data)
+        except Exception as e:
+            resp.success = False
+            resp.message = f'não consegui mudar o laser na cena: {e}'
+            return resp
+        # Desligado, o script deixa o último sinal de distâncias na cena; sem
+        # esta flag, o /scan continuaria saindo com leituras velhas. Com ela,
+        # sai um scan vazio no lugar (ver _on_publish_empty_scan).
+        self.lidar_enabled = req.data
+        estado = 'ligado' if req.data else 'desligado'
+        self.get_logger().info(f'lidar {estado}')
+        resp.success = True
+        resp.message = f'lidar {estado}'
+        return resp
 
     # ---------------- Lifecycle Callbacks ----------------
     def on_configure(self, state: State):
@@ -254,7 +291,11 @@ class MyRobot(LifecycleNode):
             clock.clock = stamp
             self.clock_publisher.publish(clock)
             self._on_publish_odometry(stamp)
-            self._on_publish_laserscan(sim, stamp)
+            if self.lidar_enabled:
+                self._on_publish_laserscan(sim, stamp)
+            elif sim_time - self._last_empty_scan >= EMPTY_SCAN_PERIOD:
+                self._last_empty_scan = sim_time
+                self._on_publish_empty_scan(stamp)
 
     def _on_publish_odometry(self, stamp):
         with self.lock:
@@ -304,6 +345,20 @@ class MyRobot(LifecycleNode):
         msg.ranges = distance
         msg.angle_max = (
             msg.angle_min + (len(distance) - 1) * msg.angle_increment)
+        self.laserscan_publisher.publish(msg)
+
+    def _on_publish_empty_scan(self, stamp):
+        """Scan sem nenhum eco, enquanto o laser está desligado.
+
+        Não marca nem limpa nada nos costmaps (todas as leituras são infinitas)
+        e o SLAM está pausado, mas o horário dele mantém viva a TF map -> odom,
+        que o SLAM carimba com o horário do último scan.
+        """
+        msg = self.laserscan_msg
+        n = int(round(180.0 * self.density)) + 1
+        msg.header.stamp = stamp
+        msg.ranges = [float('inf')] * n
+        msg.angle_max = msg.angle_min + (n - 1) * msg.angle_increment
         self.laserscan_publisher.publish(msg)
 
     def _on_publish_docking(self):
