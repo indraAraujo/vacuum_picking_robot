@@ -15,6 +15,7 @@
   <exec_depend>rcl_interfaces</exec_depend>
   <exec_depend>std_srvs</exec_depend>
   <exec_depend>slam_toolbox</exec_depend>
+  <exec_depend>vacuum_cleaner_interfaces</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>

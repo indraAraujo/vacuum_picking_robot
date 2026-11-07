@@ -2,33 +2,64 @@
 """
 cleaning_server
 ---------------
-- Lifecycle: configured/activated by Nav2 lifecycle manager.
-- Operational: acts only when behaviour_server publishes Mode == CLEANING.
-- Publishes a simple "vacuuming" motion command (cmd_vel) when active.
+- Lifecycle: configurado e ativado pelo lifecycle_manager.
+- Operação: só age quando o behaviour_server publica o modo CLEANING.
+- No modo CLEANING, varre o ambiente em faixas paralelas (boustrophedon),
+  com a estratégia do controlador do projeto 4 - roomba (ver coverage.py), e
+  publica a velocidade em /myRobot/cmd_vel.
 
-Real logic ideas:
-- Replace constant twist with a coverage planner or SLAM-based exploration.
-- Use bump sensors / lidar to avoid obstacles.
+Os cinco sensores de proximidade do original vêm de uma de duas fontes
+(parâmetro ``sensors``):
+
+- ``map`` (padrão): raios no mapa (/map) a partir da pose exata da simulação
+  (/myRobot/odom). Não precisa do lidar, que pode ficar desligado durante a
+  limpeza (ver map_sensors.py);
+- ``lidar``: os pontos do /scan.
+
+Segurança: as paredes da cena não têm colisão, então andar sem enxergar faria
+o robô atravessá-las. Sem mapa (ou sem scan recente, na fonte ``lidar``), o
+robô fica parado.
 """
+import math
 import threading
 import time
 
 import rclpy
 from rclpy.lifecycle import Node as LifecycleNode
 from rclpy.lifecycle import TransitionCallbackReturn
-from rclpy.qos import QoSProfile
+from rclpy.qos import DurabilityPolicy, QoSProfile, qos_profile_sensor_data
 from rclpy.executors import SingleThreadedExecutor
 from std_msgs.msg import String
 from geometry_msgs.msg import Twist
+from nav_msgs.msg import OccupancyGrid, Odometry
+from sensor_msgs.msg import LaserScan
 from .modes import Mode
+import tf2_ros
+from .coverage import AXLE_X, Coverage, scan_points, virtual_sensors
+from .map_sensors import MapSensors
+
+#: Posição do laser em base_link (a mesma do static_transform_publisher).
+LASER_X = 0.003
+#: Scan mais velho que isto (tempo de simulação) faz o robô parar [s].
+SCAN_TIMEOUT = 0.5
+
 
 class Cleaning(LifecycleNode):
     def __init__(self):
         super().__init__('cleaning_server')
         self.pub_cmd = None
-        self._mode_sub = None
+        self._subs = []
         self._tick_timer = None
         self._mode = Mode.IDLE
+        self._scan = None
+        self._odom = None
+        self._map = None
+        self.declare_parameter('sensors', 'map')
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+        self._last_t = None
+        self._blind_warned = False
+        self.coverage = Coverage(log=lambda m: self.get_logger().info(m))
         self._shutdown_event = threading.Event()
         self._shutdown_deadline = None
         self._shutdown_grace = 2.0
@@ -36,9 +67,28 @@ class Cleaning(LifecycleNode):
     def on_configure(self, _):
         qos = QoSProfile(depth=1)
         self.pub_cmd = self.create_publisher(Twist, '/myRobot/cmd_vel', qos)
-        self._mode_sub = self.create_subscription(String, '/myRobot/behaviour/mode', self._on_mode, qos)
-        self._tick_timer = self.create_timer(0.5, self._tick)
-        self.get_logger().info('cleaning configured')
+        # Estado da varredura (SEEK, LANE, CONTOUR, TURN, BACK), para depurar.
+        self.pub_state = self.create_publisher(String, '/myRobot/cleaning/state', qos)
+        self.source = self.get_parameter('sensors').value
+        if self.source not in ('map', 'lidar'):
+            self.get_logger().error(f'sensors:={self.source}? use map ou lidar')
+            return TransitionCallbackReturn.FAILURE
+        self._subs = [
+            self.create_subscription(String, '/myRobot/behaviour/mode', self._on_mode, qos),
+            self.create_subscription(Odometry, '/myRobot/odom', self._on_odom, 10),
+        ]
+        if self.source == 'map':
+            latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+            self._subs.append(self.create_subscription(
+                OccupancyGrid, '/map', self._on_map, latched))
+        else:
+            self._subs.append(self.create_subscription(
+                LaserScan, '/scan', self._on_scan, qos_profile_sensor_data))
+        # O original age a cada passo da simulação (50 ms); aqui, no mesmo
+        # ritmo, no relógio da simulação (use_sim_time).
+        self._tick_timer = self.create_timer(0.05, self._tick)
+        self.get_logger().info(
+            f'cleaning configured (varredura em faixas, sensores: {self.source})')
         return TransitionCallbackReturn.SUCCESS
 
     def on_activate(self, _):
@@ -58,9 +108,9 @@ class Cleaning(LifecycleNode):
         if self.pub_cmd is not None:
             self.destroy_publisher(self.pub_cmd)
             self.pub_cmd = None
-        if self._mode_sub is not None:
-            self.destroy_subscription(self._mode_sub)
-            self._mode_sub = None
+        for sub in self._subs:
+            self.destroy_subscription(sub)
+        self._subs = []
 
     def on_deactivate(self, _):
         self.get_logger().info('cleaning deactivating: cancelling timers')
@@ -88,19 +138,113 @@ class Cleaning(LifecycleNode):
             return False
         return time.monotonic() >= self._shutdown_deadline
 
+    # ---------------------------------------------------------------- entradas
     def _on_mode(self, msg: String):
         try:
-            self._mode = Mode(msg.data)
+            mode = Mode(msg.data)
         except Exception:
-            self._mode = Mode.IDLE
+            mode = Mode.IDLE
+        if mode == self._mode:
+            return
+        if mode == Mode.CLEANING:
+            self.coverage.reset()
+            self._last_t = None
+            self.get_logger().info('limpeza: começando a varredura em faixas')
+        elif self._mode == Mode.CLEANING:
+            self._publish(0.0, 0.0)
+            self.get_logger().info(f'limpeza interrompida (modo {mode.value})')
+        self._mode = mode
+
+    def _on_scan(self, msg: LaserScan):
+        self._scan = msg
+
+    def _on_odom(self, msg: Odometry):
+        self._odom = msg
+
+    def _on_map(self, msg: OccupancyGrid):
+        self._map = MapSensors.from_msg(msg)
+
+    # ------------------------------------------------------------------ ciclo
+    def _publish(self, lin, rot):
+        if self.pub_cmd is None:
+            return
+        twist = Twist()
+        twist.linear.x = float(lin)
+        twist.angular.z = float(rot)
+        self.pub_cmd.publish(twist)
+
+    def _blind(self, reason):
+        self._publish(0.0, 0.0)
+        if not self._blind_warned:
+            self.get_logger().warn(f'limpeza parada: {reason}')
+            self._blind_warned = True
+
+    def _map_pose(self, pose):
+        """Pose de base_link no mapa: odometria composta com map->odom."""
+        x, y = pose.position.x, pose.position.y
+        theta = 2.0 * math.atan2(pose.orientation.z, pose.orientation.w)
+        try:
+            t = self.tf_buffer.lookup_transform('map', 'odom', rclpy.time.Time())
+        except tf2_ros.TransformException:
+            return None
+        tx, ty = t.transform.translation.x, t.transform.translation.y
+        q = t.transform.rotation
+        yaw = 2.0 * math.atan2(q.z, q.w)
+        c, s = math.cos(yaw), math.sin(yaw)
+        return tx + c * x - s * y, ty + s * x + c * y, theta + yaw
+
+    def _readings(self, now):
+        """Leituras dos sensores virtuais e a pose, ou None se estiver cego."""
+        if self._odom is None:
+            self._blind('esperando /myRobot/odom')
+            return None
+        pose = self._odom.pose.pose
+        if self.source == 'map':
+            if self._map is None:
+                self._blind('esperando o mapa (/map)')
+                return None
+            x, y, theta = self._map_pose(pose) or (None, None, None)
+            if x is None:
+                self._blind('esperando a transformação map->odom')
+                return None
+            return self._map.readings(x, y, theta), x, y, theta
+        if self._scan is None:
+            self._blind('esperando /scan')
+            return None
+        scan_t = self._scan.header.stamp.sec + self._scan.header.stamp.nanosec * 1e-9
+        if now - scan_t > SCAN_TIMEOUT:
+            self._blind('o scan está atrasado')
+            return None
+        points = scan_points(self._scan.ranges, self._scan.angle_min,
+                             self._scan.angle_increment, laser_x=LASER_X)
+        if not points:
+            self._blind('o scan está vazio (lidar desligado?)')
+            return None
+        theta = 2.0 * math.atan2(pose.orientation.z, pose.orientation.w)
+        return virtual_sensors(points), pose.position.x, pose.position.y, theta
 
     def _tick(self):
         if self._mode != Mode.CLEANING:
             return
-        twist = Twist()
-        twist.linear.x = 0.2
-        twist.angular.z = 0.3
-        self.pub_cmd.publish(twist)
+        now = self.get_clock().now().nanoseconds * 1e-9
+        lido = self._readings(now)
+        if lido is None:
+            return
+        if self._blind_warned:
+            self.get_logger().info('limpeza retomada: os sensores voltaram')
+            self._blind_warned = False
+        readings, bx, by, theta = lido
+
+        # A varredura usa o centro do eixo das rodas, como no original.
+        x = bx + AXLE_X * math.cos(theta)
+        y = by + AXLE_X * math.sin(theta)
+        dt = 0.05 if self._last_t is None else max(0.0, now - self._last_t)
+        self._last_t = now
+
+        lin, rot = self.coverage.step(now, dt, readings, x, y, theta)
+        self._publish(lin, rot)
+        self.pub_state.publish(String(data=self.coverage.state))
+
 
 def main():
     rclpy.init()
@@ -118,6 +262,7 @@ def main():
         executor.shutdown()
         node.destroy_node()
         rclpy.shutdown()
+
 
 if __name__ == '__main__':
     main()

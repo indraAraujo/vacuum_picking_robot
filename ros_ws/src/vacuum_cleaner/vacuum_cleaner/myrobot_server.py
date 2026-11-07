@@ -42,6 +42,12 @@ class MyRobot(LifecycleNode):
         self.sim = self.client.getObject('sim')
 
         self._battery = 1.0
+        self._battery_t = None
+        # Descarga limpando e carga na base, em fração por segundo de simulação.
+        self.declare_parameter('battery_drain', 0.01)
+        self.declare_parameter('battery_charge', 0.02)
+        self.battery_drain = float(self.get_parameter('battery_drain').value)
+        self.battery_charge = float(self.get_parameter('battery_charge').value)
         self._near_base = False
         self._last_cmd = Twist()
         self._mode = Mode.IDLE
@@ -224,6 +230,11 @@ class MyRobot(LifecycleNode):
         self._last_cmd = msg
         with self.lock:
             self.last_cmd_time = self.sim_time
+        # Aplica já, sem esperar o timer: o timer é de relógio (50 ms), e com a
+        # simulação mais rápida que o tempo real isso virava 0,25 s ou mais de
+        # simulação com a velocidade antiga, o bastante para o robô passar do
+        # ponto de parada e raspar na parede. O timer fica para o timeout.
+        self._on_send_velocity()
 
     def _set_wheels(self, left, right):
         if (left, right) == self._wheel_cmd:
@@ -379,10 +390,17 @@ class MyRobot(LifecycleNode):
         self.pub_angle.publish(angle)
 
     def _on_publish_battery(self):
+        # Pelo tempo de simulação, não pelo relógio: a cena roda abaixo do
+        # tempo real, e pelo relógio a bateria acabava em ~30 s de simulação.
+        # Mesmas taxas por segundo de antes (1 %/s limpando, 2 %/s carregando).
+        with self.lock:
+            now = self.sim_time
+        dt = 0.0 if self._battery_t is None else max(0.0, now - self._battery_t)
+        self._battery_t = now
         if self._mode == Mode.CLEANING:
-            self._battery = max(0.0, self._battery - 0.002)  # drains slowly
+            self._battery = max(0.0, self._battery - self.battery_drain * dt)
         elif self._mode == Mode.CHARGING:
-            self._battery = min(1.0, self._battery + 0.004)  # charges faster
+            self._battery = min(1.0, self._battery + self.battery_charge * dt)
 
         bs = BatteryState()
         bs.percentage = float(self._battery)

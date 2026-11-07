@@ -167,9 +167,10 @@ O microfone já fica ouvindo. Fale, por exemplo, **"vá para a cozinha"**: o rob
 | Comando | O que o robô faz |
 |---|---|
 | "vá para a cozinha" | Vai até o cômodo |
-| "limpar a cozinha" | Vai até o cômodo e anuncia (a limpeza em si ainda não está ligada à voz) |
+| "limpar a cozinha" | Vai até o cômodo pelo Nav2 e começa a varredura em faixas lá |
 | "voltar para a base" | Volta ao ponto onde começou |
-| "limpar tudo", "mapear a casa" | Percorre todos os cômodos, um a um |
+| "limpar tudo", "limpar aqui" | Começa a varredura onde está |
+| "mapear a casa" | Percorre todos os cômodos, um a um |
 | "pausar" / "continuar" | Para sem perder a fila e retoma de onde parou |
 | "parar" | Cancela tudo e para onde está |
 | "como está" | Diz onde está, para onde vai e quanto falta |
@@ -223,12 +224,44 @@ Ao subir, o `myrobot_server` sempre religa o laser, caso uma sessão anterior te
 
 Os destinos e os limites dos cômodos ficam em `ros_ws/src/human_interaction/human_interaction/rooms.py`, no referencial da cena. Se o robô começar em outro ponto da cena, atualize `SCENE_ORIGIN` nesse arquivo.
 
-### Iniciar e parar a limpeza
+### Limpeza
+
+No modo `CLEANING`, o `cleaning_server` varre o ambiente em **faixas paralelas** (boustrophedon), com a estratégia do controlador `2 - python_controller.py` do projeto *4 - roomba*:
+
+1. anda reto até o primeiro obstáculo;
+2. gira até ficar paralelo a ele e segue a parede: é a primeira faixa;
+3. contorna os obstáculos sempre para o lado ainda não limpo;
+4. quando se afasta um diâmetro do robô (0,30 m) da faixa anterior, gira e começa a faixa seguinte no sentido oposto, a curva em "U".
+
+Também trata obstáculos estreitos (retoma a mesma faixa), o fim da sala (inverte o lado da varredura) e armadilhas (gira para o lado mais livre e recomeça).
+
+Os cinco sensores de proximidade do original são **virtuais**. Por padrão, o `cleaning_server` os calcula **no mapa, sem o laser**: a pose vem da simulação (exata), e cada sensor vira três raios percorridos no `/map` até a primeira célula ocupada (`vacuum_cleaner/map_sensors.py`). Célula desconhecida ou fora do mapa conta como parede. Assim o laser fica desligado também durante a limpeza.
+
+Para usar o laser em vez do mapa (por exemplo, para enxergar objetos que não estão no mapa):
+
+```bash
+ros2 launch vacuum_cleaner vacuum_cleaner.launch.py cleaning_sensors:=lidar
+ros2 launch human_interaction voice.launch.py lidar:=true
+```
+
+A lógica da varredura fica em `vacuum_cleaner/coverage.py`, que não depende de ROS. Os testes em `test/test_coverage.py` a rodam numa sala sintética com as duas fontes.
+
+Iniciar e parar pelo serviço da máquina de estados:
 
 ```bash
 ros2 service call /myRobot/start_stop vacuum_cleaner_interfaces/srv/StartStop '{command: "start"}'
 ros2 service call /myRobot/start_stop vacuum_cleaner_interfaces/srv/StartStop '{command: "stop"}'
 ```
+
+Ou por voz: "limpar a sala" leva o robô até a sala pelo Nav2 e começa a varredura lá; "limpar tudo" começa onde ele está; "parar" encerra.
+
+Pontos de atenção:
+
+- **Bateria:** a bateria simulada gasta 1 % por segundo de simulação limpando e carrega 2 % por segundo na base. Com 25 %, a máquina de estados manda o robô para a base, e com 100 % ela volta a limpar. Ajuste com os parâmetros `battery_drain` e `battery_charge` do `myrobot_server`.
+- **Limites da varredura:** ela é reativa e não fica presa ao cômodo. Pelas portas abertas, o robô pode seguir para outros cômodos.
+- **Folga das paredes:** as distâncias de parada foram aumentadas em relação ao original, porque a traseira deste robô gira num círculo maior (~0,23 m em torno do eixo). Como as paredes da cena não têm colisão, raspar nelas era atravessar. O custo é uma faixa de ~13 cm junto às paredes que não é varrida.
+- **Sensores pelo mapa:** só enxergam o que está no mapa. Objetos novos no chão e portas que o laser não registrou no mapeamento passam despercebidos. Sem mapa, o robô fica parado; com `cleaning_sensors:=lidar`, ele também para se o scan estiver vazio ou atrasado.
+- **Velocidade da simulação:** sem o laser, a cena roda várias vezes mais rápido que o tempo real. Por isso o `myrobot_server` aplica cada comando de velocidade assim que ele chega. Antes, ele esperava um timer de 50 ms de relógio, o que virava ~0,25 s de simulação com a velocidade antiga, e o robô passava do ponto de parada.
 
 ### Acompanhar a execução
 
@@ -266,7 +299,7 @@ O SLAM e o Nav2 seguem o tempo da simulação (`/clock`), então continuam corre
 | --- | --- | --- |
 | `myrobot_server` | Ponte com o CoppeliaSim e telemetria simulada | Assina `/myRobot/cmd_vel_mux` e comanda os motores; publica `/clock`, `/scan`, `/myRobot/odom`, a TF `odom → base_link`, a bateria e o sinal da base |
 | `behaviour_server` | Máquina de estados de operação | Assina a bateria e o sinal da base; oferece `/myRobot/start_stop`; publica `/myRobot/behaviour/mode` |
-| `cleaning_server` | Movimento de limpeza no modo `CLEANING` | Publica uma velocidade fixa em `/myRobot/cmd_vel` |
+| `cleaning_server` | Varredura em faixas no modo `CLEANING` | Assina `/map` (ou `/scan`, com `cleaning_sensors:=lidar`) e `/myRobot/odom`; publica `/myRobot/cmd_vel` |
 | `autodocking_server` | Aproximação da base no modo `AUTODOCKING` | Lê o sinal da base e publica em `/myRobot/cmd_vel` |
 | `charging_server` | Reservado para a supervisão da carga | Assina a bateria e o modo |
 | `charged_server` | Reservado para tarefas com o robô na base | Assina o modo |
@@ -320,7 +353,7 @@ ros2 service call /lifecycle_manager/manage_nodes nav2_msgs/srv/ManageLifecycleN
 
 ## Limitações atuais
 
-- A limpeza e o docking ainda não usam o Nav2: esses nós publicam velocidades diretamente em `/myRobot/cmd_vel`. Não mande goals nos modos `CLEANING` e `AUTODOCKING`, porque os comandos se misturam.
+- A limpeza e o docking não usam o Nav2: os dois publicam velocidades direto em `/myRobot/cmd_vel`. Durante a limpeza, a voz recusa comandos de deslocamento até você dizer "parar". O docking segue uma base simulada, sem relação com uma base real na cena.
 - A bateria e o sinal da base são simulados dentro do `myrobot_server`, sem relação com a posição real da base.
 - O lidar cobre 180° à frente do robô.
 - O mapa não cobre entrada, banheiro e quarto (portas fechadas na cena), e as paredes da cena não têm colisão.

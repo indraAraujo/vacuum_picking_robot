@@ -13,16 +13,19 @@ Os comandos que movem o robô (mesmo comportamento do house_navigator do
 pacote voice_cleaner):
 
     ir_para      local   vai até o cômodo
-    limpar_local local   idem: vai até lá e anuncia (limpar de fato é a etapa
-                         seguinte)
+    limpar_local local   vai até o cômodo pelo Nav2 e começa a varredura lá
+    limpar_tudo          começa a varredura onde está
+    limpar_aqui          idem
     voltar_base          volta ao ponto onde o robô começou
-    limpar_tudo          passa por todos os cômodos, um a um
-    mapear               idem: percorrer a casa é o mesmo trajeto
-    parar                cancela a fila e para onde está
+    mapear               passa por todos os cômodos, um a um
+    parar                cancela a fila, encerra a limpeza e para
     pausar / continuar   para sem perder a fila, e retoma de onde parou
     status               diz onde está, para onde vai e quanto falta
 
-Pedir "a casa toda" em limpar_local cai no mesmo percurso de limpar_tudo.
+A varredura é a do cleaning_server (faixas paralelas, ver vacuum_cleaner/
+coverage.py), ligada pelo serviço /myRobot/start_stop da máquina de estados.
+Pedir "a casa toda" em limpar_local também começa a varredura onde está.
+Durante a limpeza, comandos de deslocamento são recusados: diga "parar" antes.
 
 O lidar no modo de voz
 ----------------------
@@ -40,6 +43,10 @@ Duas coisas acompanham o desligamento:
 
 Sem o laser, o Nav2 navega só pelo mapa que o SLAM já tinha montado: obstáculos
 novos não são vistos.
+
+A limpeza também roda com o laser desligado: o cleaning_server acha as
+paredes no mapa, a partir da pose exata da simulação (vacuum_cleaner/
+map_sensors.py).
 """
 
 import json
@@ -60,6 +67,7 @@ from rclpy.time import Time
 from std_msgs.msg import String
 from slam_toolbox.srv import Pause
 from std_srvs.srv import SetBool
+from vacuum_cleaner_interfaces.srv import StartStop
 import tf2_ros
 
 from human_interaction import commands, rooms
@@ -104,6 +112,14 @@ class VoiceCommander(Node):
         self.room_pub = self.create_publisher(String, 'house/room', latched)
         self.create_subscription(String, 'voice/command',
                                  self.command_callback, 10)
+
+        # Limpeza: a máquina de estados do behaviour_server decide o modo, e o
+        # cleaning_server varre quando o modo é CLEANING.
+        self.mode = None
+        self.clean_when_done = False     # começar a varrer ao fim da fila
+        self.start_stop = self.create_client(StartStop, '/myRobot/start_stop')
+        self.create_subscription(String, '/myRobot/behaviour/mode',
+                                 self.on_mode, QoSProfile(depth=1))
         self.create_timer(1.0, self.update_room)
 
         # Desligar o lidar: primeiro o SLAM pausa as medições (para o scan
@@ -255,18 +271,20 @@ class VoiceCommander(Node):
             self.report()
         elif intent == 'voltar_base':
             self.go([('base', rooms.BASE)], 'voltando para a base')
-        elif intent in ('limpar_tudo', 'mapear'):
-            self.go(self.all_rooms(), f'percorrendo a casa ({intent})')
+        elif intent == 'mapear':
+            self.go(self.all_rooms(), 'percorrendo a casa')
+        elif intent in ('limpar_tudo', 'limpar_aqui'):
+            self.start_cleaning('limpando a partir daqui')
         elif intent in ('ir_para', 'limpar_local'):
             self.go_to_place(intent, local)
         elif intent == 'ajuda':
             for linha in commands.help_lines():
                 self.get_logger().info(linha)
-        elif intent in ('limpar_aqui', 'ajustar_velocidade'):
-            # Entendido, mas não muda o destino. Dizer isso evita a dúvida
-            # "ele ouviu e não fez nada?".
+        elif intent == 'ajustar_velocidade':
+            # Entendido, mas não muda nada. Dizer isso evita a dúvida "ele
+            # ouviu e não fez nada?".
             self.get_logger().info(
-                f'{intent}: entendi, mas este nó só cuida de deslocamento')
+                f'{intent}: entendi, mas ainda não ajusto a velocidade')
 
     @staticmethod
     def all_rooms():
@@ -278,7 +296,7 @@ class VoiceCommander(Node):
                 f'{intent} sem lugar: diga "vá para a cozinha", por exemplo')
             return
         if local == 'casa toda':
-            self.go(self.all_rooms(), 'percorrendo a casa toda')
+            self.start_cleaning('limpando a casa a partir daqui')
             return
         room = rooms.BY_NAME.get(local)
         if room is None:
@@ -286,11 +304,16 @@ class VoiceCommander(Node):
                 f'"{local}" não é um cômodo desta casa. Tenho: '
                 + ', '.join(rooms.room_names()))
             return
-        verbo = 'indo para' if intent == 'ir_para' else 'indo limpar'
-        self.go([(room.name, room.goal)], f'{verbo} {room.article} {room.name}')
+        limpar = intent == 'limpar_local'
+        verbo = 'indo limpar' if limpar else 'indo para'
+        self.go([(room.name, room.goal)], f'{verbo} {room.article} {room.name}',
+                then_clean=limpar)
 
-    def go(self, destinos, motivo):
+    def go(self, destinos, motivo, then_clean=False):
         """Troca a fila pelos destinos novos e começa pelo primeiro."""
+        if self.mode == 'CLEANING':
+            self.get_logger().warn('estou limpando: diga "parar" antes de me mandar para outro lugar')
+            return
         if not self.nav.server_is_ready():
             self.get_logger().warn(
                 'o Nav2 ainda não está pronto (/navigate_to_pose). O launch '
@@ -299,6 +322,7 @@ class VoiceCommander(Node):
         self.cancel_goal()
         self.queue = list(destinos)
         self.paused = False
+        self.clean_when_done = then_clean
         self.get_logger().info(motivo)
         self.send_next()
 
@@ -323,8 +347,44 @@ class VoiceCommander(Node):
         self.cancel_goal()
         self.queue = []
         self.paused = False
+        self.clean_when_done = False
+        if self.mode == 'CLEANING':
+            self.call_start_stop('stop')
         self.announce('parado')
         self.get_logger().info(f'{motivo}: parei e esvaziei a fila')
+
+    # =========================================================================
+    #  Limpeza
+    # =========================================================================
+
+    def start_cleaning(self, motivo):
+        if self.mode == 'CLEANING':
+            self.get_logger().info('já estou limpando')
+            return
+        self.cancel_goal()
+        self.queue = []
+        self.paused = False
+        # O laser continua desligado: o cleaning_server acha as paredes no
+        # mapa, a partir da pose da simulação (map_sensors.py).
+        if self.call_start_stop('start'):
+            self.announce('limpando')
+            self.get_logger().info(motivo)
+
+    def call_start_stop(self, comando):
+        if not self.start_stop.service_is_ready():
+            self.get_logger().warn(
+                'o serviço /myRobot/start_stop não está disponível: o '
+                'behaviour_server está rodando?')
+            return False
+        self.start_stop.call_async(StartStop.Request(command=comando))
+        return True
+
+    def on_mode(self, msg: String):
+        anterior, self.mode = self.mode, msg.data
+        if anterior == 'CLEANING' and self.mode != 'CLEANING':
+            self.get_logger().info(f'limpeza encerrada (modo {self.mode})')
+            if not self.queue:
+                self.announce('parado')
 
     def report(self):
         onde = self.room or '?'
@@ -344,6 +404,10 @@ class VoiceCommander(Node):
 
     def send_next(self):
         if not self.queue:
+            if self.clean_when_done:
+                self.clean_when_done = False
+                self.start_cleaning('cheguei: começando a varredura')
+                return
             self.announce('parado')
             self.get_logger().info('fila vazia: terminei')
             return

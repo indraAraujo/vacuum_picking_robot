@@ -42,6 +42,9 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'map', default_value=os.path.join(pkg_dir, 'maps', 'casa.yaml'),
             description='Mapa carregado quando slam:=false'),
+        DeclareLaunchArgument(
+            'cleaning_sensors', default_value='map',
+            description='Onde a limpeza acha as paredes: map (sem o lidar) ou lidar'),
         # O robô recebe a saída do mux: o teleop tem prioridade sobre o resto.
         Node(package='vacuum_cleaner', executable='myrobot_server', name='myrobot', output='screen',
              remappings=[('/myRobot/cmd_vel', '/myRobot/cmd_vel_mux')],
@@ -49,7 +52,10 @@ def generate_launch_description():
                  LaunchConfiguration('sim_port'), value_type=int)}]),
         Node(package='vacuum_cleaner', executable='cmd_vel_mux', name='cmd_vel_mux', output='screen'),
         Node(package='vacuum_cleaner', executable='behaviour_server', name='behaviour_server', output='screen'),
-        Node(package='vacuum_cleaner', executable='cleaning_server', name='cleaning_server', output='screen'),
+        # Varredura em faixas: segue o relógio da simulação, como o original.
+        Node(package='vacuum_cleaner', executable='cleaning_server', name='cleaning_server', output='screen',
+             parameters=[{'use_sim_time': True,
+                          'sensors': LaunchConfiguration('cleaning_sensors')}]),
         Node(package='vacuum_cleaner', executable='autodocking_server', name='autodocking_server', output='screen'),
         Node(package='vacuum_cleaner', executable='charging_server', name='charging_server', output='screen'),
         Node(package='vacuum_cleaner', executable='charged_server', name='charged_server', output='screen'),
