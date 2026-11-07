@@ -25,6 +25,7 @@
   <exec_depend>nav2_map_server</exec_depend>
   <exec_depend>teleop_twist_keyboard</exec_depend>
   <exec_depend>coppeliasim_zmqremoteapi_client</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
 
   <export>
     <build_type>ament_python</build_type>

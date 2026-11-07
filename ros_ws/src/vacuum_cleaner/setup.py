@@ -15,6 +15,7 @@ setup(
         (os.path.join('share', package_name, 'launch'), glob('launch/*.py')),
         (os.path.join('share', package_name, 'config'), glob('config/*.yaml')),
         (os.path.join('share', package_name, 'maps'), glob('maps/*.yaml') + glob('maps/*.pgm')),
+        (os.path.join('share', package_name, 'models'), glob('models/*.ttm')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -32,6 +33,7 @@ setup(
             'charging_server = vacuum_cleaner.charging_server:main',
             'charged_server = vacuum_cleaner.charged_server:main',
             'cmd_vel_mux = vacuum_cleaner.cmd_vel_mux:main',
+            'debris_server = vacuum_cleaner.debris_server:main',
         ],
     },
 )

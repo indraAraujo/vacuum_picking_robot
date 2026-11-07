@@ -263,6 +263,23 @@ Pontos de atenção:
 - **Sensores pelo mapa:** só enxergam o que está no mapa. Objetos novos no chão e portas que o laser não registrou no mapeamento passam despercebidos. Sem mapa, o robô fica parado; com `cleaning_sensors:=lidar`, ele também para se o scan estiver vazio ou atrasado.
 - **Velocidade da simulação:** sem o laser, a cena roda várias vezes mais rápido que o tempo real. Por isso o `myrobot_server` aplica cada comando de velocidade assim que ele chega. Antes, ele esperava um timer de 50 ms de relógio, o que virava ~0,25 s de simulação com a velocidade antiga, e o robô passava do ponto de parada.
 
+### Bananas para aspirar
+
+Como nos projetos de referência (`slam_field` e *4 - roomba*), o chão tem sujeira: ao subir, o `debris_server` espalha **15 bananas** pela casa. Quando o robô passa por cima de uma delas **limpando** (modo `CLEANING`), ela some da cena: foi aspirada. Fora da limpeza, o robô passa por cima sem recolher.
+
+- **Onde caem:** em posições sorteadas no chão livre do mapa, a pelo menos 0,30 m das paredes, longe da base e em lugares que o robô alcança a partir dela. A lógica fica em `vacuum_cleaner/debris.py`, com teste em `test/test_debris.py`.
+- **Recolhimento:** a banana a até 0,15 m do centro do robô é aspirada. É a mesma largura do `/Dirt` do *4 - roomba*, metade do espaçamento entre faixas.
+- **Não são obstáculo:** não têm colisão e não aparecem para o laser nem para os sensores.
+- **Cena intacta:** as bananas são criadas pela Remote API a partir de `models/banana.ttm`, e a cena salva não muda. Ao encerrar o launch, as que sobraram são tiradas da cena. Se algo interromper isso, elas são tiradas na próxima subida.
+
+```bash
+ros2 launch vacuum_cleaner vacuum_cleaner.launch.py bananas:=30   # Outra quantidade (0 desliga)
+ros2 service call /myRobot/debris/respawn std_srvs/srv/Trigger    # Lote novo
+ros2 topic echo /myRobot/debris                                   # As que ainda estão no chão
+```
+
+O log do `debris_server` mostra cada banana aspirada (`banana aspirada em (+0.01, -2.96): 1/15`).
+
 ### Acompanhar a execução
 
 ```bash
@@ -303,6 +320,7 @@ O SLAM e o Nav2 seguem o tempo da simulação (`/clock`), então continuam corre
 | `autodocking_server` | Aproximação da base no modo `AUTODOCKING` | Lê o sinal da base e publica em `/myRobot/cmd_vel` |
 | `charging_server` | Reservado para a supervisão da carga | Assina a bateria e o modo |
 | `charged_server` | Reservado para tarefas com o robô na base | Assina o modo |
+| `debris_server` | Bananas no chão para aspirar | Espalha as bananas na cena e as tira quando o robô passa limpando; publica `/myRobot/debris` e oferece `/myRobot/debris/respawn` |
 | `cmd_vel_mux` | Prioridade do teclado sobre os demais comandos | Assina `/myRobot/cmd_vel_teleop` e `/myRobot/cmd_vel`; publica `/myRobot/cmd_vel_mux`, que o `myrobot_server` assina |
 | `voice_listener` | Microfone → texto, com o Vosk offline em português | Publica `/myRobot/voice/transcript` |
 | `command_parser` | Texto → comando (intenção e lugar) | Assina a transcrição; publica `/myRobot/voice/command` |

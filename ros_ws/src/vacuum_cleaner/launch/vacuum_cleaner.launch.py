@@ -10,7 +10,7 @@ real robot logic while keeping the same topic/service contracts.
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition, UnlessCondition
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.parameter_descriptions import ParameterValue
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
@@ -45,6 +45,15 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'cleaning_sensors', default_value='map',
             description='Onde a limpeza acha as paredes: map (sem o lidar) ou lidar'),
+        DeclareLaunchArgument(
+            'bananas', default_value='15',
+            description='Bananas espalhadas pelo chão para o robô aspirar (0 desliga)'),
+        Node(package='vacuum_cleaner', executable='debris_server', name='debris_server',
+             output='screen',
+             condition=IfCondition(PythonExpression([LaunchConfiguration('bananas'), ' > 0'])),
+             parameters=[{'sim_port': ParameterValue(LaunchConfiguration('sim_port'), value_type=int),
+                          'count': ParameterValue(LaunchConfiguration('bananas'), value_type=int),
+                          'map': LaunchConfiguration('map')}]),
         # O robô recebe a saída do mux: o teleop tem prioridade sobre o resto.
         Node(package='vacuum_cleaner', executable='myrobot_server', name='myrobot', output='screen',
              remappings=[('/myRobot/cmd_vel', '/myRobot/cmd_vel_mux')],
