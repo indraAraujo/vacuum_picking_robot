@@ -39,7 +39,14 @@ substituída:
 import argparse
 import os
 
+import math
+
 from coppeliasim_zmqremoteapi_client import RemoteAPIClient
+
+try:
+    from picking_robot import arm
+except ImportError:            # rodando o arquivo direto, fora do pacote
+    import arm
 
 #: Perfil de movimento das juntas do braço: velocidade [rad/s], aceleração e
 #: solavanco. O youBot vem com 2*pi rad/s, rápido demais para acompanhar.
@@ -48,8 +55,13 @@ ARM_PROFILE = [1.0, 2.0, 20.0]
 #: é descartada): cilindro só visual sobre o robô [m].
 BASE_DIAMETER = 0.15
 BASE_HEIGHT = 0.05
-#: Posição da base do braço no robô (x para a direita, y para a frente) [m].
-MOUNT_XY = (0.0, 0.0)
+#: Posição da base do braço no robô (x para a direita, y para a frente) [m]:
+#: recuada, para o Kinect caber na frente.
+MOUNT_XY = (0.0, arm.MOUNT_Y)
+#: Kinect: pé encostado na frente do topo do robô, virado para a frente e
+#: inclinado para o chão. Com 25 graus, ele vê o chão de ~0,2 m à frente do
+#: robô até quase o horizonte (o sensor alcança 3,5 m).
+KINECT_TILT_DEG = 25.0
 #: Cesto: centro na cena (é (-0,53; -2,00) no frame map, a área mais livre da
 #: sala, com ~1 m de folga para todo lado), diâmetro e altura [m].
 BASKET_XY = (3.02, -1.225)
@@ -217,7 +229,43 @@ def _add_basket(sim, model, log=print):
     log(f'cesto em {BASKET_XY} (cena), {largura:.2f} m x {altura:.2f} m')
 
 
-def build(sim, source, youbot_model, output, basket_model, log=print):
+def _add_kinect(sim, model, robot, robot_top, log=print):
+    """Kinect da biblioteca do CoppeliaSim na frente do topo do robô.
+
+    Fica em /myRobot/kinect, com os sensores /myRobot/kinect/rgb e
+    /myRobot/kinect/depth (os mesmos nomes do robô do potential_field). Sem
+    peso e sem colisão, como o braço.
+    """
+    kinect = sim.loadModel(model)
+    sim.setObjectAlias(kinect, 'kinect')
+    sim.setObjectParent(kinect, robot, True)
+    pe = sim.getShapeBB(kinect)[0]                      # o pé (x, y, z)
+    for h in sim.getObjectsInTree(kinect, sim.sceneobject_shape):
+        sim.setObjectInt32Param(h, sim.shapeintparam_static, 1)
+        sim.setObjectInt32Param(h, sim.shapeintparam_respondable, 0)
+    sim.setObjectOrientation(kinect, robot, [0.0, 0.0, 0.0])
+    rgb = sim.getObject('/myRobot/kinect/rgb')
+    junta = sim.getObject('/myRobot/kinect/joint')
+    sim.setJointPosition(junta, 0.0)
+    # Gira o Kinect em torno do eixo vertical até o sensor olhar para +y (a
+    # frente do robô): o sensor de visão olha ao longo do próprio eixo z.
+    m = sim.getObjectMatrix(rgb, robot)
+    olha = math.atan2(m[6], m[2])
+    sim.setObjectOrientation(kinect, robot, [0.0, 0.0, math.pi / 2 - olha])
+    frente = sim.getShapeBB(robot)[0][1] / 2.0
+    sim.setObjectPosition(kinect, robot, [0.0, frente - pe[1] / 2, robot_top + pe[2] / 2])
+    # Inclina pela junta do próprio Kinect, no sentido que abaixa o olhar.
+    alvo = math.radians(KINECT_TILT_DEG)
+    for sinal in (1.0, -1.0):
+        sim.setJointPosition(junta, sinal * alvo)
+        m = sim.getObjectMatrix(rgb, robot)
+        if m[10] < 0:                                   # eixo z do sensor desce
+            break
+    m = sim.getObjectMatrix(rgb, robot)
+    log(f'Kinect na frente do robô, olhando {math.degrees(math.asin(-m[10])):.0f} graus para baixo')
+
+
+def build(sim, source, youbot_model, output, basket_model, kinect_model, log=print):
     sim.loadScene(source)
     robot = sim.getObject('/myRobot')
 
@@ -284,6 +332,7 @@ def build(sim, source, youbot_model, output, basket_model, log=print):
             sim.setObjectInt32Param(h, sim.shapeintparam_respondable_mask, mask & ~BANANA_BIT)
 
     _add_basket(sim, basket_model, log)
+    _add_kinect(sim, kinect_model, robot, robot_top, log)
 
     sim.saveScene(output)
     log(f'cena salva em {output}')
@@ -315,15 +364,17 @@ def main(argv=None):
         coppelia, 'models', 'robots', 'mobile', 'KUKA YouBot.ttm'))
     p.add_argument('--basket', default=os.path.join(
         coppelia, 'models', 'household', 'largeBasket.ttm'))
+    p.add_argument('--kinect', default=os.path.join(
+        coppelia, 'models', 'components', 'sensors', 'kinect.ttm'))
     p.add_argument('--output', default=os.path.join(repo, 'simulation', 'scene_house_arm.ttt'))
     a = p.parse_args(argv)
-    for caminho in (a.source, a.youbot, a.basket):
+    for caminho in (a.source, a.youbot, a.basket, a.kinect):
         if not os.path.exists(caminho):
             p.error(f'não achei {caminho}')
     sim = RemoteAPIClient(port=a.port).getObject('sim')
     if sim.getSimulationState() != sim.simulation_stopped:
         sim.stopSimulation()
-    build(sim, a.source, a.youbot, a.output, a.basket)
+    build(sim, a.source, a.youbot, a.output, a.basket, a.kinect)
 
 
 if __name__ == '__main__':

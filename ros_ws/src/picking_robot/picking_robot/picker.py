@@ -63,7 +63,7 @@ class Picker(Node):
         decl('autostart', True)
         decl('map', os.path.join(vc, 'maps', 'casa.yaml'))
         decl('approach_radius', 0.65)   # Nav2 deixa o robô a isto da banana [m]
-        decl('grasp_distance', 0.27)    # banana à frente do centro do robô ao pegar [m]
+        decl('grasp_distance', 0.25)    # banana à frente do centro do robô ao pegar [m]
         decl('grasp_height', 0.010)     # ponta dos dedos acima do chão ao pegar [m]
         decl('basket_radius', 0.22)     # raio do cesto [m]
         decl('basket_approach', 0.90)   # Nav2 deixa o robô a isto do centro do cesto [m]

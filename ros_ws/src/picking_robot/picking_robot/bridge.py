@@ -58,6 +58,12 @@ class PickingBridge(Node):
         super().__init__('picking_bridge')
         self.declare_parameter('sim_port', 23000)
         self.declare_parameter('cmd_timeout', 0.6)
+        # O Kinect da cena renderiza duas imagens de 640x480 a cada passo, o que
+        # deixa a simulação ~5 vezes mais lenta. Desligado (padrão), os
+        # sensores só renderizam quando alguém pede (sim.handleVisionSensor),
+        # como fará o nó de visão; ligado, renderizam sempre e as janelinhas do
+        # Kinect no CoppeliaSim mostram a cor e a profundidade ao vivo.
+        self.declare_parameter('kinect', False)
         port = int(self.get_parameter('sim_port').value)
         self.cmd_timeout = float(self.get_parameter('cmd_timeout').value)
 
@@ -70,6 +76,11 @@ class PickingBridge(Node):
                 'a cena aberta no CoppeliaSim não tem /myRobot/rosInterface: '
                 'abra simulation/scene_house_arm.ttt (ou gere-a com '
                 '"ros2 run picking_robot build_scene")')
+        kinect = bool(self.get_parameter('kinect').value)
+        for nome in ('rgb', 'depth'):
+            h = self.sim.getObject(f'/myRobot/kinect/{nome}', {'noError': True})
+            if h >= 0:
+                self.sim.setExplicitHandling(h, 0 if kinect else 1)
         if self.sim.getSimulationState() == self.sim.simulation_stopped:
             self.sim.startSimulation()
 

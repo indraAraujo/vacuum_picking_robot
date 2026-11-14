@@ -27,7 +27,11 @@ LIMITS = [
 # no centro do corpo). Com a junta 0 em zero, as juntas 1, 2 e 3 giram em
 # torno de +x e o braço se move no plano y-z. Ângulo positivo leva a garra
 # para trás (-y); negativo, para a frente.
-SHOULDER = (0.033, 0.201)    #: (y, z) da junta 1 [m]
+#: Base do braço no topo do robô: recuada 5 cm do centro, para o Kinect caber
+#: na frente (ver build_scene.py) [m].
+MOUNT_Y = -0.05
+#: (y, z) da junta 1 [m]: 3,3 cm à frente do eixo da base do braço.
+SHOULDER = (0.033 + MOUNT_Y, 0.201)
 LINKS = (0.155, 0.135, 0.209)  #: junta 1 -> 2, 2 -> 3, 3 -> ponta dos dedos [m]
 #: Altura do chão no referencial do robô [m].
 FLOOR_Z = -0.08

@@ -22,7 +22,7 @@ def test_chao_deixa_a_garra_acima_do_chao_a_frente():
     assert 0.0 < z - arm.FLOOR_Z <= 0.03
 
 
-@pytest.mark.parametrize('y, z', [(0.25, -0.06), (0.20, 0.07), (0.30, -0.02), (0.22, 0.10)])
+@pytest.mark.parametrize('y, z', [(0.25, -0.06), (0.25, -0.07), (0.20, 0.07), (0.22, 0.10)])
 def test_reach_volta_pela_cinematica_direta(y, z):
     q = arm.reach(y, z)
     assert q is not None

@@ -2,7 +2,7 @@
 
 O mesmo robô aspirador, na mesma casa, mas com o **braço e a garra do KUKA youBot** no lugar do lidar. Bananas ficam espalhadas pelo chão, e o robô as recolhe, uma a uma, para um cesto azul que fica no chão da sala.
 
-Hoje o robô sabe exatamente onde as bananas estão, porque lê a posição na simulação. O sistema foi separado para que, no futuro, um Kinect possa estimar essas posições sem que o resto mude: veja [Rumo ao Kinect](#rumo-ao-kinect).
+Hoje o robô sabe exatamente onde as bananas estão, porque lê a posição na simulação. Ele já tem um **Kinect** montado na frente, virado para o chão, e o sistema foi separado para que, no futuro, o Kinect estime essas posições sem que o resto mude: veja [Rumo ao Kinect](#rumo-ao-kinect).
 
 ## Como executar
 
@@ -22,6 +22,7 @@ Compile e carregue o ambiente como no README principal, incluindo `picking_robot
 | `bananas` | `8` | Quantas bananas espalhar |
 | `seed` | `-1` | Semente do sorteio das posições (`-1`: um sorteio diferente a cada vez) |
 | `positions` | | Bananas em posições fixas no `map`, no lugar do sorteio: `positions:="[x1, y1, x2, y2]"` |
+| `kinect` | `false` | `true` renderiza o Kinect a cada passo, e as janelinhas de cor e profundidade dele no CoppeliaSim mostram a imagem ao vivo. Deixa a simulação ~5 vezes mais lenta |
 | `picker` | `true` | `false` sobe tudo, menos o recolhimento (para usar o teleop) |
 | `sim_port` | `23000` | Porta da ZeroMQ Remote API do CoppeliaSim |
 
@@ -58,7 +59,7 @@ Fechar a garra com uma banana entre os dedos também a pega.
 O nó `picker` repete, da banana mais próxima à mais distante:
 
 1. **Ir até a banana.** O Nav2 leva o robô a um ponto a 0,65 m dela, já virado para ela. O lado é escolhido para que o trecho final, em linha reta, esteja livre de paredes e longe do cesto (`plan.py`). Se o Nav2 não chegar, ele tenta outro lado.
-2. **Encostar.** Um controle próprio gira o robô para a banana e anda reto até ela ficar 27 cm à frente do centro dele, com erro de menos de 1 cm. Ele usa a posição mais recente da banana, não a do início.
+2. **Encostar.** Um controle próprio gira o robô para a banana e anda reto até ela ficar 25 cm à frente do centro dele, com erro de menos de 1 cm. Ele usa a posição mais recente da banana, não a do início.
 3. **Pegar.** O punho gira para os dedos ficarem atravessados na banana (`wrist_for`). A garra desce aberta, primeiro por cima e depois até 1 cm do chão (`arm.reach`), e então fecha e sobe. O picker confirma a pega por `/myRobot/gripper/holding`. O robô volta de ré pelo mesmo corredor até 0,65 m da banana.
 4. **Entregar.** O Nav2 leva o robô a 0,90 m do cesto, e o controle próprio encosta até o centro do cesto ficar 42 cm à frente. O braço estende a banana sobre o cesto, 24 cm acima do chão, e a garra abre: a banana cai dentro. O robô volta de ré até 0,90 m do cesto e segue para a próxima.
 
@@ -94,7 +95,7 @@ O contrato entre "onde estão as bananas" e "recolher" é um tópico só:
 
 Para trocar o "sensor perfeito" por visão:
 
-1. **Pôr a câmera no robô.** Um sensor de visão RGB-D no CoppeliaSim, preso ao braço ou à base, publicado como `sensor_msgs/Image` e `sensor_msgs/CameraInfo` (cor e profundidade), mais a TF da câmera.
+1. **Publicar as imagens do Kinect.** Ele já está na cena (`/myRobot/kinect/rgb` e `/myRobot/kinect/depth`, 640×480, 57° de abertura, alcance de 3,5 m), na frente do robô, olhando 25° para baixo. Falta a ponte renderizar os dois sensores alguns quadros por segundo (`sim.handleVisionSensor`) e publicar `sensor_msgs/Image` e `sensor_msgs/CameraInfo`, mais a TF da câmera. Os nomes são os mesmos do robô do `potential_field`, em `coppeliasim-saves`, cuja ponte já faz isso e pode ser aproveitada.
 2. **Escrever o nó de visão.** Ele acha as bananas na imagem (o amarelo contra o piso é um bom começo) e projeta os pixels com a profundidade. Depois passa os pontos para o frame `map` pela TF e publica em `/bananas`.
 3. **Subir o `world` com `publish_truth:=false`.** Ele continua espalhando as bananas e publicando o cesto e o mapa, mas para de publicar `/bananas`.
 
@@ -112,7 +113,10 @@ Uma limitação para a visão: o robô só enxerga para onde a câmera aponta. C
 4. troca o script da garra por um que abre e fecha sob comando e que pega e solta as bananas (veja acima);
 5. cria o script `/myRobot/rosInterface`, por onde a ponte lê e comanda tudo numa chamada só;
 6. põe o cesto (`/bananaBasket`) no chão da sala: o *largeBasket* do CoppeliaSim, reduzido para 0,44 m de diâmetro e 0,10 m de altura, azul e fixo no lugar. Fica em (-0,53; -2,00) no frame `map`, a área mais livre da sala;
-7. tira das máscaras de colisão do robô o bit usado pelas bananas.
+7. tira das máscaras de colisão do robô o bit usado pelas bananas;
+8. põe o **Kinect** da biblioteca do CoppeliaSim (`kinect.ttm`) em `/myRobot/kinect`: com o pé encostado na frente do topo do robô, virado para a frente e inclinado 25° para baixo pela junta do próprio Kinect (`KINECT_TILT_DEG`). Com essa inclinação, ele vê o chão de ~0,2 m à frente do robô até perto do horizonte. Sem peso e sem colisão, como o braço. A barra tem as medidas reais, 28 cm, e sobra para os lados do robô, que tem 15 cm de largura.
+
+Para o Kinect caber, a base do braço fica 5 cm atrás do centro do robô (`arm.MOUNT_Y`). Com isso, a garra alcança o chão até 25 cm à frente do centro, e é a essa distância que o robô pega as bananas.
 
 Para gerar a cena de novo (por exemplo, depois de mudar `build_scene.py`), com um CoppeliaSim aberto. A cena aberta nele é substituída:
 

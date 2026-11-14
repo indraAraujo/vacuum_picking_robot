@@ -18,7 +18,7 @@ O projeto usa ROS 2 Jazzy e simula o robô no CoppeliaSim. Hoje, esta branch tem
 │   └── picking_robot/              # O robô com a garra do youBot, que recolhe bananas para um cesto
 └── simulation/
     ├── scene_house.ttt             # Cena do robô no CoppeliaSim
-    └── scene_house_arm.ttt         # A mesma casa, com o robô com garra e o cesto (gerada pelo picking_robot)
+    └── scene_house_arm.ttt         # A mesma casa, com o robô com garra e Kinect e o cesto (gerada pelo picking_robot)
 ```
 
 O robô com garra tem o próprio README: [ros_ws/src/picking_robot/README.md](ros_ws/src/picking_robot/README.md).

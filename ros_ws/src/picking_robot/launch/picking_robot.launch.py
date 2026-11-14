@@ -37,12 +37,17 @@ def generate_launch_description():
                               description='Recolher as bananas sozinho'),
         DeclareLaunchArgument('seed', default_value='-1',
                               description='Semente do sorteio das bananas (-1: aleatório)'),
+        DeclareLaunchArgument('kinect', default_value='false',
+                              description='Renderizar o Kinect a cada passo (deixa a '
+                                          'simulação ~5x mais lenta)'),
         DeclareLaunchArgument('positions', default_value='[0.0]',
                               description='Bananas em posições fixas no map, no lugar do '
                                           'sorteio: "[x1, y1, x2, y2]"'),
 
         Node(package='picking_robot', executable='bridge', name='picking_bridge',
-             output='screen', parameters=[{'sim_port': port}]),
+             output='screen', parameters=[{
+                 'sim_port': port,
+                 'kinect': ParameterValue(LaunchConfiguration('kinect'), value_type=bool)}]),
         Node(package='picking_robot', executable='world', name='world', output='screen',
              parameters=[sim_time, {
                  'sim_port': port,
