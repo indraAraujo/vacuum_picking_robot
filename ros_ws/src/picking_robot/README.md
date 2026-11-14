@@ -2,7 +2,7 @@
 
 O mesmo robô aspirador, na mesma casa, mas com o **braço e a garra do KUKA youBot** no lugar do lidar. Bananas ficam espalhadas pelo chão, e o robô as recolhe, uma a uma, para um cesto azul que fica no chão da sala.
 
-Hoje o robô sabe exatamente onde as bananas estão, porque lê a posição na simulação. Ele já tem um **Kinect** montado na frente, virado para o chão, e o sistema foi separado para que, no futuro, o Kinect estime essas posições sem que o resto mude: veja [Rumo ao Kinect](#rumo-ao-kinect).
+Onde as bananas estão pode vir de dois lugares: da própria simulação (o padrão) ou do **Kinect** montado na frente do robô, com `vision:=true`. Nos dois casos sai o mesmo tópico, no mesmo formato, e o resto do sistema não muda. Veja [O Kinect](#o-kinect-achar-as-bananas-pela-imagem).
 
 ## Como executar
 
@@ -22,7 +22,7 @@ Compile e carregue o ambiente como no README principal, incluindo `picking_robot
 | `bananas` | `8` | Quantas bananas espalhar |
 | `seed` | `-1` | Semente do sorteio das posições (`-1`: um sorteio diferente a cada vez) |
 | `positions` | | Bananas em posições fixas no `map`, no lugar do sorteio: `positions:="[x1, y1, x2, y2]"` |
-| `kinect` | `false` | `true` renderiza o Kinect a cada passo, e as janelinhas de cor e profundidade dele no CoppeliaSim mostram a imagem ao vivo. Deixa a simulação ~5 vezes mais lenta |
+| `vision` | `false` | `true`: as bananas vêm do Kinect (nó `vision`); `false`: da simulação (nó `world`) |
 | `picker` | `true` | `false` sobe tudo, menos o recolhimento (para usar o teleop) |
 | `sim_port` | `23000` | Porta da ZeroMQ Remote API do CoppeliaSim |
 
@@ -59,7 +59,7 @@ Fechar a garra com uma banana entre os dedos também a pega.
 O nó `picker` repete, da banana mais próxima à mais distante:
 
 1. **Ir até a banana.** O Nav2 leva o robô a um ponto a 0,65 m dela, já virado para ela. O lado é escolhido para que o trecho final, em linha reta, esteja livre de paredes e longe do cesto (`plan.py`). Se o Nav2 não chegar, ele tenta outro lado.
-2. **Encostar.** Um controle próprio gira o robô para a banana e anda reto até ela ficar 25 cm à frente do centro dele, com erro de menos de 1 cm. Ele usa a posição mais recente da banana, não a do início.
+2. **Encostar.** Um controle próprio gira o robô para a banana e anda reto até ela ficar 25 cm à frente do centro dele, com erro de menos de 1 cm. Ele usa a posição mais recente da banana, não a do início: com o Kinect, a estimativa melhora à medida que o robô chega perto.
 3. **Pegar.** O punho gira para os dedos ficarem atravessados na banana (`wrist_for`). A garra desce aberta, primeiro por cima e depois até 1 cm do chão (`arm.reach`), e então fecha e sobe. O picker confirma a pega por `/myRobot/gripper/holding`. O robô volta de ré pelo mesmo corredor até 0,65 m da banana.
 4. **Entregar.** O Nav2 leva o robô a 0,90 m do cesto, e o controle próprio encosta até o centro do cesto ficar 42 cm à frente. O braço estende a banana sobre o cesto, 24 cm acima do chão, e a garra abre: a banana cai dentro. O robô volta de ré até 0,90 m do cesto e segue para a próxima.
 
@@ -85,23 +85,55 @@ O script não sabe qual banana o robô quer. Basta haver uma entre os dedos. Por
 - **`/basket` e `/map`.** Publica a pose do cesto e o mapa da casa (`maps/casa.yaml` do `vacuum_cleaner`) com o cesto marcado como obstáculo, para o Nav2 desviar dele.
 - **`/bananas/delivered`.** Conta as bananas dentro do cesto, inclusive as empilhadas acima da borda.
 
-## Rumo ao Kinect
+## O Kinect: achar as bananas pela imagem
 
-O contrato entre "onde estão as bananas" e "recolher" é um tópico só:
+Por padrão, quem diz onde estão as bananas é o nó `world`, que lê a posição exata da simulação. Com `vision:=true`, quem diz é o **Kinect**: o nó `vision` acha as bananas na imagem e publica no mesmo tópico, no mesmo formato. O picker não sabe a diferença.
 
-| Tópico | Tipo | Conteúdo |
+```bash
+ros2 launch picking_robot picking_robot.launch.py vision:=true
+rqt_image_view /bananas/debug      # o que a visão está vendo, com as detecções marcadas
+```
+
+### Como uma imagem vira a posição de uma banana
+
+1. **Amarelo.** A imagem RGB vai para HSV e sai uma máscara do amarelo da banana. O braço do robô é laranja e fica de fora da faixa.
+2. **Borrões.** Cada mancha ligada é uma banana. As que encostam na borda da imagem são descartadas: estão cortadas, e de um pedaço não dá para dizer onde fica o meio.
+3. **Para o espaço.** Cada pixel do borrão vira um ponto 3D com a profundidade do Kinect e os parâmetros da câmera, e a TF `map → kinect_optical` leva os pontos para o mapa.
+4. **O meio do corpo.** A banana é um arco. O centro de massa dos pontos cai para o lado côncavo, onde não há banana nenhuma, e é lá que a garra desceria. Então o `detect.py` mede o **eixo médio**: fatia o borrão ao longo do comprimento e toma o centro de cada fatia. O meio desse eixo é onde a garra deve descer, e a direção dele ali é como a banana está deitada.
+
+### O que o robô já viu
+
+A câmera só olha para a frente, então o nó `vision` **guarda** as bananas que já encontrou, no frame `map`:
+
+- uma detecção perto de uma banana conhecida atualiza aquela banana (média com o que já se sabia);
+- uma detecção longe de todas vira uma banana nova, anunciada depois de `min_hits` quadros seguidos, para que um borrão de um quadro só não vire banana;
+- uma banana conhecida que **devia** aparecer no quadro (está no campo de visão, perto o bastante, e caberia inteira na imagem) e não aparece ganha uma falta. Depois de `max_misses` faltas, é esquecida. É assim que somem as que o robô acabou de pegar.
+
+Dois casos são tratados à parte:
+
+- **o braço na frente:** na pose de pegar, o braço desce bem diante do Kinect e tapa quase toda a imagem. Esses quadros são descartados (o nó olha as juntas em `/joint_states`);
+- **o cesto cheio:** de perto, a pilha de bananas dentro dele é um borrão amarelo grande. Um borrão cujos pontos caem dentro do círculo do cesto é ignorado — o teste é feito nos pontos, não no meio estimado, que de um monte de bananas juntas cai em qualquer lugar.
+
+### Precisão medida
+
+Nove bananas espalhadas de 0,3 a 2,4 m do robô, comparando a estimativa com a posição real da simulação:
+
+| Distância | Erro de posição | Erro de rumo |
 | --- | --- | --- |
-| `/bananas` | `geometry_msgs/PoseArray`, frame `map` | Uma pose por banana no chão: `position` é o meio da banana (`z` é a altura dele); `orientation` é a rotação em torno de z que alinha o eixo x ao comprimento dela |
+| até 1,2 m | 1,1 cm (máx 1,1) | 2,7° (máx 4,6) |
+| todas | 2,1 cm (máx 6,9) | 15° (máx 64) |
 
-Para trocar o "sensor perfeito" por visão:
+O que conta é a coluna de perto: o robô chega a 0,65 m da banana e estima de novo antes de descer a garra, e a tolerância da garra é de cerca de 2,5 cm. De longe a estimativa é pior, e serve só para decidir para onde ir. Uma banana apontada quase na direção da câmera fica curta na imagem, e é daí que vem o pior erro de rumo.
 
-1. **Publicar as imagens do Kinect.** Ele já está na cena (`/myRobot/kinect/rgb` e `/myRobot/kinect/depth`, 640×480, 57° de abertura, alcance de 3,5 m), na frente do robô, olhando 25° para baixo. Falta a ponte renderizar os dois sensores alguns quadros por segundo (`sim.handleVisionSensor`) e publicar `sensor_msgs/Image` e `sensor_msgs/CameraInfo`, mais a TF da câmera. Os nomes são os mesmos do robô do `potential_field`, em `coppeliasim-saves`, cuja ponte já faz isso e pode ser aproveitada.
-2. **Escrever o nó de visão.** Ele acha as bananas na imagem (o amarelo contra o piso é um bom começo) e projeta os pixels com a profundidade. Depois passa os pontos para o frame `map` pela TF e publica em `/bananas`.
-3. **Subir o `world` com `publish_truth:=false`.** Ele continua espalhando as bananas e publicando o cesto e o mapa, mas para de publicar `/bananas`.
+### Procurar
 
-O picker já tolera uma visão imperfeita. Durante a aproximação, ele acompanha a detecção mais próxima de onde a banana estava, então a posição pode mudar um pouco entre um quadro e outro. Uma banana que ele não vê não é buscada; quando ela aparecer, será.
+Com o Kinect, não ver nenhuma banana só quer dizer que o robô não está olhando para lá. Quando não há nenhuma banana conhecida, ele dá uma volta completa onde está e, se ainda assim não achar nada, visita os pontos de `search_points` (seis lugares livres que cobrem a casa mapeada), girando em cada um. Só depois de passar por todos sem ver nada ele dá a tarefa por terminada.
 
-Uma limitação para a visão: o robô só enxerga para onde a câmera aponta. Com bananas fora do campo de visão, o picker precisará de um comportamento de busca (girar no lugar, visitar cômodos) quando `/bananas` estiver vazio. Hoje, com a lista vazia por 5 s, ele dá a tarefa por terminada.
+Com as posições vindas da simulação isso não acontece: ali a lista vazia já quer dizer que acabou, e o robô para assim que entrega a última (parâmetro `search` do picker, que o launch liga junto com `vision`).
+
+### Custo
+
+Renderizar o Kinect custa cerca de 35 ms por quadro e segura a simulação. A ponte só renderiza enquanto alguém estiver assinando as imagens, e a até `kinect_rate` quadros por segundo de simulação (5 por padrão). Sem ninguém ouvindo, o Kinect não custa nada.
 
 ## A cena
 
@@ -139,7 +171,11 @@ A TF `map → odom` é a identidade: a odometria é a pose exata da cena, e o fr
 
 | Nome | Tipo | O que é |
 | --- | --- | --- |
-| `/bananas` | `geometry_msgs/PoseArray` | Bananas no chão (veja [Rumo ao Kinect](#rumo-ao-kinect)) |
+| `/bananas` | `geometry_msgs/PoseArray`, frame `map` | Bananas no chão: `position` é o meio da banana; `orientation` é a rotação em torno de z que alinha o eixo x ao comprimento dela. Publicado pelo `world` ou pelo `vision` |
+| `/bananas/debug` | `sensor_msgs/Image` | A imagem do Kinect com as detecções marcadas (só com `vision:=true`, e só enquanto alguém assina) |
+| `/myRobot/kinect/rgb/image_raw` | `sensor_msgs/Image` (`rgb8`) | Cor, 640×480 |
+| `/myRobot/kinect/depth/image_raw` | `sensor_msgs/Image` (`32FC1`) | Profundidade em metros |
+| `/myRobot/kinect/camera_info` | `sensor_msgs/CameraInfo` | Parâmetros da câmera, e a TF `base_link → kinect_optical` |
 | `/basket` | `geometry_msgs/PoseStamped` | Centro do cesto, no `map` |
 | `/bananas/delivered` | `std_msgs/Int32` | Bananas no cesto |
 | `/picking/state` | `std_msgs/String` | O que o picker está fazendo |
@@ -178,6 +214,8 @@ cd ros_ws/src/picking_robot && PYTHONPATH=. python3 -m pytest test
 - **Física da pega:** a garra não pega nada pela física; o script da cena prende a banana à mão. Ela não escorrega nem cai no caminho.
 - **O braço atravessa o que estiver no caminho**, inclusive o chão e o próprio robô. As poses prontas evitam isso; os comandos junta a junta, não.
 - **Bananas perto de paredes:** o sorteio as deixa a 0,45 m ou mais das paredes. Uma banana mais perto, posta à mão, pode não ter lado livre para o robô chegar, e ele desiste dela.
-- **Obstáculos novos:** sem laser, o Nav2 só conhece o mapa e o cesto. Um objeto novo no caminho não é visto.
+- **Obstáculos novos:** sem laser, o Nav2 só conhece o mapa e o cesto. Um objeto novo no caminho não é visto — nem pelo Kinect, que só é usado para achar bananas.
+- **Qualquer amarelo é banana:** a visão procura cor, não forma. Numa cena com outros objetos amarelos no chão, o robô tentaria pegá-los. Trocar o `detect.py` por um detector treinado (YOLO, como no `potential_field`) resolveria, sem mexer no resto.
+- **A câmera não vê o que está logo à frente:** o Kinect enxerga do chão a partir de ~0,2 m à frente do robô. Na hora de fechar a garra, a banana já saiu por baixo da imagem; o robô usa a última estimativa e a odometria, que na simulação é exata.
 - **Cesto cheio:** com muitas bananas, elas se empilham acima da borda e podem cair para fora. Uma que caia fora volta a ser recolhida.
 - **O robô escorrega devagar quando parado** (~17 mm em 20 s de simulação). A cena original faz o mesmo, então não é efeito do braço.

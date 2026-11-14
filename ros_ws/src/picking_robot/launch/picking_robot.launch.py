@@ -16,7 +16,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
@@ -37,23 +37,28 @@ def generate_launch_description():
                               description='Recolher as bananas sozinho'),
         DeclareLaunchArgument('seed', default_value='-1',
                               description='Semente do sorteio das bananas (-1: aleatório)'),
-        DeclareLaunchArgument('kinect', default_value='false',
-                              description='Renderizar o Kinect a cada passo (deixa a '
-                                          'simulação ~5x mais lenta)'),
+        DeclareLaunchArgument('vision', default_value='false',
+                              description='true: as bananas vêm do Kinect (nó vision); '
+                                          'false: da simulação (nó world)'),
         DeclareLaunchArgument('positions', default_value='[0.0]',
                               description='Bananas em posições fixas no map, no lugar do '
                                           'sorteio: "[x1, y1, x2, y2]"'),
 
         Node(package='picking_robot', executable='bridge', name='picking_bridge',
-             output='screen', parameters=[{
-                 'sim_port': port,
-                 'kinect': ParameterValue(LaunchConfiguration('kinect'), value_type=bool)}]),
+             output='screen', parameters=[{'sim_port': port}]),
+        Node(package='picking_robot', executable='vision', name='vision', output='screen',
+             condition=IfCondition(LaunchConfiguration('vision')),
+             parameters=[sim_time]),
         Node(package='picking_robot', executable='world', name='world', output='screen',
              parameters=[sim_time, {
                  'sim_port': port,
                  'count': ParameterValue(LaunchConfiguration('bananas'), value_type=int),
                  'seed': ParameterValue(LaunchConfiguration('seed'), value_type=int),
-                 'positions': ParameterValue(LaunchConfiguration('positions'))}]),
+                 'positions': ParameterValue(LaunchConfiguration('positions')),
+                 # Com a visão ligada, quem publica /bananas é o nó vision.
+                 'publish_truth': ParameterValue(
+                     PythonExpression(["'", LaunchConfiguration('vision'), "' != 'true'"]),
+                     value_type=bool)}]),
 
         # O frame map é a pose inicial do robô, e a odometria vem da cena: a
         # TF map -> odom é a identidade. A cena não tem laser, mas o Nav2
@@ -76,5 +81,10 @@ def generate_launch_description():
         ),
         Node(package='picking_robot', executable='picker', name='picker', output='screen',
              condition=IfCondition(LaunchConfiguration('picker')),
-             parameters=[sim_time]),
+             parameters=[sim_time, {
+                 # Com a verdade da simulação, a lista vazia já quer dizer que
+                 # acabou: procurar pela casa só faz sentido com o Kinect.
+                 'search': ParameterValue(
+                     PythonExpression(["'", LaunchConfiguration('vision'), "' == 'true'"]),
+                     value_type=bool)}]),
     ])

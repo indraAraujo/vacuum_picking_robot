@@ -20,7 +20,14 @@ Saídas:
 - ``/myRobot/gripper/holding`` (std_msgs/Bool): se a garra segura algo;
 - ``/scan``: um scan vazio (sem nenhum eco) a cada 0,1 s de simulação. A cena
   não tem laser, e o Nav2 (parâmetros do vacuum_cleaner) espera um: vazio, ele
-  não marca obstáculos, mas mantém o collision_monitor ativo.
+  não marca obstáculos, mas mantém o collision_monitor ativo;
+- o Kinect: ``/myRobot/kinect/rgb/image_raw`` (rgb8),
+  ``/myRobot/kinect/depth/image_raw`` (32FC1, em metros),
+  ``/myRobot/kinect/camera_info`` e a TF ``base_link -> kinect_optical``.
+
+Renderizar o Kinect custa ~35 ms por quadro e segura a simulação, então a
+ponte só renderiza enquanto alguém estiver assinando as imagens (o nó vision,
+o rqt_image_view). Sem ninguém ouvindo, nada é renderizado.
 
 Cada leitura e cada comando são uma chamada só ao script
 ``/myRobot/rosInterface`` da cena (ver build_scene.py).
@@ -31,12 +38,14 @@ import time
 
 from coppeliasim_zmqremoteapi_client import RemoteAPIClient
 from geometry_msgs.msg import TransformStamped, Twist
+import numpy as np
 from nav_msgs.msg import Odometry
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, qos_profile_sensor_data
 from rclpy.time import Time
 from rosgraph_msgs.msg import Clock
-from sensor_msgs.msg import JointState, LaserScan
+from sensor_msgs.msg import CameraInfo, Image, JointState, LaserScan
 from std_msgs.msg import Bool, Float64MultiArray, String
 import tf2_ros
 
@@ -50,6 +59,23 @@ FORWARD_YAW_OFFSET = math.pi / 2.0
 MOTOR_SIGN = -1.0
 #: Período do scan vazio [s de simulação].
 SCAN_PERIOD = 0.1
+#: Frame óptico do Kinect (x para a direita, y para baixo, z para a frente).
+CAMERA_FRAME = 'kinect_optical'
+
+
+def quaternion(r):
+    """Quaternio (x, y, z, w) de uma matriz de rotação 3x3."""
+    t = r[0][0] + r[1][1] + r[2][2]
+    if t > 0:
+        s = math.sqrt(t + 1.0) * 2
+        return ((r[2][1] - r[1][2]) / s, (r[0][2] - r[2][0]) / s,
+                (r[1][0] - r[0][1]) / s, 0.25 * s)
+    i = max(range(3), key=lambda k: r[k][k])
+    j, k = (i + 1) % 3, (i + 2) % 3
+    s = math.sqrt(1.0 + r[i][i] - r[j][j] - r[k][k]) * 2
+    q = [0.0, 0.0, 0.0]
+    q[i], q[j], q[k] = 0.25 * s, (r[j][i] + r[i][j]) / s, (r[k][i] + r[i][k]) / s
+    return (q[0], q[1], q[2], (r[k][j] - r[j][k]) / s)
 
 
 class PickingBridge(Node):
@@ -58,29 +84,28 @@ class PickingBridge(Node):
         super().__init__('picking_bridge')
         self.declare_parameter('sim_port', 23000)
         self.declare_parameter('cmd_timeout', 0.6)
-        # O Kinect da cena renderiza duas imagens de 640x480 a cada passo, o que
-        # deixa a simulação ~5 vezes mais lenta. Desligado (padrão), os
-        # sensores só renderizam quando alguém pede (sim.handleVisionSensor),
-        # como fará o nó de visão; ligado, renderizam sempre e as janelinhas do
-        # Kinect no CoppeliaSim mostram a cor e a profundidade ao vivo.
-        self.declare_parameter('kinect', False)
+        # Quadros por segundo de simulação do Kinect, quando alguém assina as
+        # imagens. Cada quadro custa ~35 ms e segura a simulação.
+        self.declare_parameter('kinect_rate', 5.0)
         port = int(self.get_parameter('sim_port').value)
         self.cmd_timeout = float(self.get_parameter('cmd_timeout').value)
 
         # O cliente ZMQ não pode ser compartilhado entre threads: um para os
         # comandos (executor) e outro para a leitura (thread).
         self.sim = RemoteAPIClient(port=port).getObject('sim')
+        self.robot = self.sim.getObject('/myRobot')
         self.iface = self.sim.getObject('/myRobot/rosInterface', {'noError': True})
         if self.iface < 0:
             raise SystemExit(
                 'a cena aberta no CoppeliaSim não tem /myRobot/rosInterface: '
                 'abra simulation/scene_house_arm.ttt (ou gere-a com '
                 '"ros2 run picking_robot build_scene")')
-        kinect = bool(self.get_parameter('kinect').value)
+        self.kinect = {}
         for nome in ('rgb', 'depth'):
             h = self.sim.getObject(f'/myRobot/kinect/{nome}', {'noError': True})
             if h >= 0:
-                self.sim.setExplicitHandling(h, 0 if kinect else 1)
+                self.sim.setExplicitHandling(h, 1)   # só renderiza quando pedimos
+                self.kinect[nome] = h
         if self.sim.getSimulationState() == self.sim.simulation_stopped:
             self.sim.startSimulation()
 
@@ -115,6 +140,8 @@ class PickingBridge(Node):
         self.reader_sim = RemoteAPIClient(port=port).getObject('sim')
         self.reader = threading.Thread(target=self.read_loop, daemon=True)
         self.reader.start()
+        if len(self.kinect) == 2:
+            self.setup_camera(port)
         self.get_logger().info(
             'ponte pronta: /myRobot/cmd_vel, /myRobot/arm/command, /myRobot/arm/pose, '
             '/myRobot/gripper/command')
@@ -234,6 +261,113 @@ class PickingBridge(Node):
             self.last_scan = t
             self.scan.header.stamp = stamp
             self.scan_pub.publish(self.scan)
+
+
+    # ---------------------------------------------------------------- câmera
+    def setup_camera(self, port):
+        """Mede a pose do Kinect, publica a TF dele e sobe a thread da câmera."""
+        rgb = self.kinect['rgb']
+        w = self.sim.getObjectInt32Param(rgb, self.sim.visionintparam_resolution_x)
+        h = self.sim.getObjectInt32Param(rgb, self.sim.visionintparam_resolution_y)
+        fov = self.sim.getObjectFloatParam(rgb, self.sim.visionfloatparam_perspective_angle)
+        # O ângulo do CoppeliaSim vale para o lado maior da imagem.
+        f = (max(w, h) / 2.0) / math.tan(fov / 2.0)
+        self.cam_size = (w, h)
+        self.rgb_pub = self.create_publisher(
+            Image, '/myRobot/kinect/rgb/image_raw', qos_profile_sensor_data)
+        self.depth_pub = self.create_publisher(
+            Image, '/myRobot/kinect/depth/image_raw', qos_profile_sensor_data)
+        info_pub = self.create_publisher(
+            CameraInfo, '/myRobot/kinect/camera_info',
+            QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
+        info = CameraInfo()
+        info.header.frame_id = CAMERA_FRAME
+        info.width, info.height = w, h
+        info.distortion_model = 'plumb_bob'
+        info.d = [0.0] * 5
+        cx, cy = (w - 1) / 2.0, (h - 1) / 2.0
+        info.k = [f, 0.0, cx, 0.0, f, cy, 0.0, 0.0, 1.0]
+        info.r = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+        info.p = [f, 0.0, cx, 0.0, 0.0, f, cy, 0.0, 0.0, 0.0, 1.0, 0.0]
+        info_pub.publish(info)
+        self.cam_info = info
+
+        # TF base_link -> kinect_optical. Em base_link a frente é +x, e no
+        # /myRobot da cena é +y; o sensor do CoppeliaSim tem x para a esquerda
+        # e y para cima, e o frame óptico do ROS, x para a direita e y para
+        # baixo (meia volta em torno do eixo z do sensor).
+        m = np.array(self.sim.getObjectMatrix(rgb, self.robot)).reshape(3, 4)
+        robot_para_base = np.array([[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+        rot = robot_para_base @ m[:, :3] @ np.diag([-1.0, -1.0, 1.0])
+        pos = robot_para_base @ m[:, 3]
+        tf = TransformStamped()
+        tf.header.stamp = self.get_clock().now().to_msg()
+        tf.header.frame_id = 'base_link'
+        tf.child_frame_id = CAMERA_FRAME
+        tf.transform.translation.x, tf.transform.translation.y, tf.transform.translation.z = pos
+        q = quaternion(rot.tolist())
+        (tf.transform.rotation.x, tf.transform.rotation.y,
+         tf.transform.rotation.z, tf.transform.rotation.w) = q
+        self.static_tf = tf2_ros.StaticTransformBroadcaster(self)
+        self.static_tf.sendTransform(tf)
+
+        self.camera = threading.Thread(target=self.camera_loop, args=(port,), daemon=True)
+        self.camera.start()
+        self.get_logger().info(
+            f'Kinect {w}x{h} (f={f:.0f} px) em {CAMERA_FRAME}; renderizo enquanto '
+            'alguém assinar /myRobot/kinect/rgb/image_raw ou .../depth/image_raw')
+
+    def camera_loop(self, port):
+        sim = RemoteAPIClient(port=port).getObject('sim')   # cliente próprio
+        rgb, depth = self.kinect['rgb'], self.kinect['depth']
+        w, h = self.cam_size
+        periodo = 1.0 / max(0.1, float(self.get_parameter('kinect_rate').value))
+        ultimo = -1e9
+        while self.running and rclpy.ok():
+            if not (self.rgb_pub.get_subscription_count()
+                    or self.depth_pub.get_subscription_count()):
+                time.sleep(0.2)
+                continue
+            with self.lock:
+                t = self.sim_time
+            if t - ultimo < periodo:
+                time.sleep(0.01)
+                continue
+            ultimo = t
+            try:
+                sim.handleVisionSensor(rgb)
+                sim.handleVisionSensor(depth)
+                cor, _ = sim.getVisionSensorImg(rgb)
+                prof, _ = sim.getVisionSensorDepth(depth, 1)
+            except Exception as erro:
+                if not rclpy.ok():
+                    break
+                self.get_logger().warn(f'não consegui ler o Kinect: {erro}')
+                time.sleep(0.5)
+                continue
+            # O CoppeliaSim entrega a imagem de baixo para cima; o ROS, de cima
+            # para baixo.
+            cor = np.frombuffer(cor, np.uint8).reshape(h, w, 3)[::-1]
+            prof = np.frombuffer(prof, np.float32).reshape(h, w)[::-1]
+            stamp = Time(nanoseconds=int(t * 1e9)).to_msg()
+            try:
+                self.rgb_pub.publish(self.image(stamp, cor, 'rgb8', w * 3))
+                self.depth_pub.publish(self.image(stamp, prof, '32FC1', w * 4))
+                self.cam_info.header.stamp = stamp
+            except Exception:
+                if not rclpy.ok():
+                    break
+                raise
+
+    def image(self, stamp, data, encoding, step):
+        msg = Image()
+        msg.header.stamp = stamp
+        msg.header.frame_id = CAMERA_FRAME
+        msg.height, msg.width = data.shape[0], data.shape[1]
+        msg.encoding = encoding
+        msg.step = step
+        msg.data = np.ascontiguousarray(data).tobytes()
+        return msg
 
 
 def main():

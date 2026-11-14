@@ -28,6 +28,7 @@ setup(
             'build_scene = picking_robot.build_scene:main',
             'world = picking_robot.world:main',
             'picker = picking_robot.picker:main',
+            'vision = picking_robot.vision:main',
         ],
     },
 )

@@ -19,10 +19,17 @@ Para cada banana, da mais próxima à mais distante:
    uma parede.
 
 O braço viaja erguido (pose ``alto``), que é a pose mais compacta. Quem diz
-onde as bananas estão é ``/bananas`` (geometry_msgs/PoseArray, frame map):
-hoje o nó world, com a posição exata da simulação; depois, um nó de visão. O
+onde as bananas estão é ``/bananas`` (geometry_msgs/PoseArray, frame map): o
+nó world, com a posição exata da simulação, ou o nó vision, pelo Kinect. O
 picker não sabe a diferença. Uma banana que caiu fora do cesto volta a
 aparecer em ``/bananas`` e é recolhida de novo.
+
+Quando não há nenhuma banana conhecida, o robô **procura**: dá uma volta
+completa onde está e, se ainda assim não achar nada, visita os pontos de
+``search_points``, girando em cada um. Só depois de passar por todos sem ver
+nada ele dá a tarefa por terminada. Com a verdade da simulação a procura
+quase nunca roda, porque o world já publica todas as bananas; com o Kinect,
+é o que faz o robô varrer a casa.
 
 Estado em ``/picking/state`` (std_msgs/String). ``/picking/start`` e
 ``/picking/stop`` (std_srvs/Trigger) começam e interrompem a tarefa; com
@@ -70,6 +77,17 @@ class Picker(Node):
         decl('basket_distance', 0.42)   # centro do cesto à frente do robô ao soltar [m]
         decl('drop_height', 0.24)       # ponta dos dedos acima do chão ao soltar [m]
         decl('max_attempts', 2)         # tentativas por banana antes de desistir
+        # Procurar: pontos livres que cobrem a casa mapeada, no frame map
+        # (sala de jantar, sala, cozinha, fundo da cozinha, lavabo, corredor).
+        # Em cada um o robô dá uma volta completa olhando o chão.
+        decl('search_points', [-0.03, -0.51, -0.13, -2.76, -0.63, 1.19,
+                               -0.33, 3.29, 1.72, 3.29, 1.72, 0.19])
+        decl('search_speed', 0.7)       # giro ao procurar [rad/s]
+        decl('min_clearance', 0.25)     # distância mínima do centro do robô à parede [m]
+        # Procurar quando não há nenhuma banana conhecida. Com a posição vinda
+        # da simulação, a lista vazia já quer dizer que acabou; com o Kinect,
+        # quer dizer só que o robô não está olhando para lá.
+        decl('search', True)
         p = lambda n: self.get_parameter(n).value
         self.floor = FloorMap.from_yaml(p('map'))
 
@@ -100,6 +118,7 @@ class Picker(Node):
 
         self.task = None
         self.goal_handle = None
+        self.falhas = []                # bananas que não deram certo: (x, y, tentativas)
         self.set_state('parado')
         if p('autostart'):
             self.task = self.mission()
@@ -215,7 +234,9 @@ class Picker(Node):
         """Nav2 até um ponto de onde se chega a ``target`` em linha reta."""
         pose = self.pose()
         avoid = [(*self.basket, self.get_parameter('basket_radius').value)] if self.basket else []
-        pontos = approach_points(target, radius, stop, self.clearance, pose[:2], avoid=avoid)
+        pontos = approach_points(target, radius, stop, self.clearance, pose[:2],
+                                 min_clear=float(self.get_parameter('min_clearance').value) + 0.05,
+                                 avoid=avoid)
         if not pontos:
             self.get_logger().warn(f'nenhum lado livre para chegar {nome}')
             return False
@@ -270,6 +291,7 @@ class Picker(Node):
         travar ali.
         """
         fim = self.now() + timeout
+        folga = float(self.get_parameter('min_clearance').value)
         while self.now() < fim:
             pose = self.pose()
             if pose is None:
@@ -277,6 +299,11 @@ class Picker(Node):
                 continue
             frente, lado = in_robot(pose, target)
             if math.hypot(frente, lado) >= distance:
+                break
+            # Não dá para recuar até dentro da parede: o Nav2 não planeja de lá.
+            atras = (pose[0] - 0.25 * math.cos(pose[2]), pose[1] - 0.25 * math.sin(pose[2]))
+            if min(self.clearance(*pose[:2]), self.clearance(*atras)) < folga:
+                self.get_logger().info('parede atrás: paro de recuar aqui')
                 break
             rumo = math.atan2(lado, frente)
             if abs(rumo) > 0.3:          # de costas para o alvo: vira antes
@@ -367,6 +394,62 @@ class Picker(Node):
                     return
             yield from self.wait(1.0)
 
+    # --------------------------------------------------------------- procura
+    def candidates(self):
+        """Bananas conhecidas que ainda vale a pena tentar."""
+        limite = self.get_parameter('max_attempts').value
+        return [b for b in self.bananas
+                if not any(math.hypot(b[0] - x, b[1] - y) < 0.15 and n >= limite
+                           for x, y, n in self.falhas)]
+
+    def spin(self, volta=2 * math.pi):
+        """Gira no lugar, parando assim que aparecer alguma banana nova."""
+        pose = self.pose()
+        if pose is None:
+            return False
+        anterior, girado = pose[2], 0.0
+        taxa = float(self.get_parameter('search_speed').value)
+        while girado < volta:
+            if self.candidates():
+                self.drive(0.0, 0.0)
+                return True
+            pose = self.pose()
+            if pose is not None:
+                girado += abs(wrap(pose[2] - anterior))
+                anterior = pose[2]
+            self.drive(0.0, taxa)
+            yield
+        self.drive(0.0, 0.0)
+        return bool(self.candidates())
+
+    def search(self):
+        """Procura bananas: gira onde está e depois visita os pontos de busca."""
+        if self.candidates():
+            return True
+        self.set_state('nada à vista: girando para procurar')
+        achou = yield from self.spin()
+        if achou:
+            return True
+        pontos = list(self.get_parameter('search_points').value)
+        for k, (x, y) in enumerate(zip(pontos[0::2], pontos[1::2]), 1):
+            pose = self.pose()
+            if math.hypot(pose[0] - x, pose[1] - y) < 0.4:
+                continue                      # já estou aqui: acabei de girar
+            self.set_state(f'procurando: ponto {k} de {len(pontos) // 2} '
+                           f'({x:+.2f}, {y:+.2f})')
+            yield from self.leave_basket()
+            rumo = math.atan2(y - pose[1], x - pose[0])
+            ok = yield from self.navigate(x, y, rumo)
+            if self.candidates():
+                return True
+            if not ok:
+                self.get_logger().warn('não cheguei a esse ponto de busca')
+                continue
+            achou = yield from self.spin()
+            if achou:
+                return True
+        return False
+
     def mission(self):
         self.set_state('esperando o Nav2, a pose do robô, o cesto e as bananas')
         while not (self.nav.server_is_ready() and self.pose() and self.basket
@@ -376,32 +459,31 @@ class Picker(Node):
         yield from self.wait(2.0)                  # as bananas assentarem no chão
         yield from self.gripper(False)
         yield from self.arm_to(arm.POSES['alto'])
-        falhas = []                                # [(x, y, tentativas)]
-        vazio_desde = None
         while True:
-            pose = self.pose()
-            candidatas = [b for b in self.bananas
-                          if not any(math.hypot(b[0] - x, b[1] - y) < 0.15 and n >= self.get_parameter('max_attempts').value
-                                     for x, y, n in falhas)]
+            candidatas = self.candidates()
             if not candidatas:
-                vazio_desde = vazio_desde or self.now()
-                if self.now() - vazio_desde > 5.0:
+                if not self.get_parameter('search').value:
+                    yield from self.wait(3.0)
+                    if not self.candidates():
+                        break
+                    continue
+                achou = yield from self.search()
+                if not achou:
                     break
-                yield
                 continue
-            vazio_desde = None
+            pose = self.pose()
             banana = min(candidatas, key=lambda b: math.hypot(b[0] - pose[0], b[1] - pose[1]))
             self.set_state(f'indo pegar a banana em ({banana[0]:+.2f}, {banana[1]:+.2f})')
             pegou = yield from self.fetch(banana)
             if not pegou:
                 yield from self.gripper(False)
                 yield from self.arm_to(arm.POSES['alto'])
-                registro = nearest(falhas, banana[:2], max_dist=0.15)
+                registro = nearest(self.falhas, banana[:2], max_dist=0.15)
                 if registro:
-                    falhas.remove(registro)
-                    falhas.append((banana[0], banana[1], registro[2] + 1))
+                    self.falhas.remove(registro)
+                    self.falhas.append((banana[0], banana[1], registro[2] + 1))
                 else:
-                    falhas.append((banana[0], banana[1], 1))
+                    self.falhas.append((banana[0], banana[1], 1))
                 self.set_state('não consegui pegar essa banana; vou para a próxima')
                 continue
             self.set_state('banana na garra: levando ao cesto')
@@ -411,7 +493,7 @@ class Picker(Node):
                 yield from self.gripper(False)
                 yield from self.arm_to(arm.POSES['alto'])
             yield from self.wait(1.0)
-        restantes = len(self.bananas)
+        restantes = len(self.candidates())
         yield from self.arm_to(arm.POSES['repouso'])
         self.set_state(f'terminei: {self.delivered} bananas no cesto'
                        + (f', {restantes} não consegui pegar' if restantes else ''))

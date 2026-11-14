@@ -23,6 +23,9 @@
   <exec_depend>nav2_bringup</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>ament_index_python</exec_depend>
+  <!-- visão: detecção das bananas na imagem do Kinect -->
+  <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
   <!-- mapa da casa, parâmetros do Nav2, modelo da banana e sorteio de posições -->
   <exec_depend>vacuum_cleaner</exec_depend>
 
