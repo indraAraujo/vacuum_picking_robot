@@ -16,9 +16,19 @@ Parte de ``simulation/scene_house.ttt`` (que não é alterada) e grava
    do youBot. Por isso a garra não segura objetos pela física: para pegar
    algo, o objeto precisa ser preso a ela por código;
 4. troca o script da garra, que no youBot só abria, por um que obedece à
-   propriedade ``customData.gripperClose`` do robô (1 fecha, 0 abre);
+   propriedade ``customData.gripperClose`` do robô (1 fecha, 0 abre). Como a
+   garra não tem física, é ele que "pega": ao fechar, se houver uma banana
+   (``/pickBanana``, criadas pelo nó world) entre os dedos, ela fica presa à
+   mão e os dedos param na largura dela; ao abrir, ela é solta e cai. O que
+   está preso sai em ``customData.holding`` (handle, ou -1);
 5. cria o script ``/myRobot/rosInterface``, que a ponte ROS 2 chama para ler
-   e comandar tudo numa chamada só (ver bridge.py).
+   e comandar tudo numa chamada só (ver bridge.py);
+6. põe no chão da sala o cesto onde o robô deixa as bananas
+   (``/bananaBasket``): o *largeBasket* do CoppeliaSim, reduzido, azul e
+   fixo no lugar;
+7. faz o robô não colidir com as bananas (bit ``BANANA_BIT`` da máscara
+   global), para ele não chutá-las ao chegar perto. Elas continuam colidindo
+   com o chão, com o cesto e umas com as outras.
 
 Rode com um CoppeliaSim aberto (pode ser sem janela). A cena aberta nele é
 substituída:
@@ -40,26 +50,97 @@ BASE_DIAMETER = 0.15
 BASE_HEIGHT = 0.05
 #: Posição da base do braço no robô (x para a direita, y para a frente) [m].
 MOUNT_XY = (0.0, 0.0)
+#: Cesto: centro na cena (é (-0,53; -2,00) no frame map, a área mais livre da
+#: sala, com ~1 m de folga para todo lado), diâmetro e altura [m].
+BASKET_XY = (3.02, -1.225)
+BASKET_DIAMETER = 0.40
+BASKET_HEIGHT = 0.12
+#: Bit da máscara global de colisão que as bananas usam e o robô não.
+BANANA_BIT = 0x0200
 
 GRIPPER_SCRIPT = '''sim = require'sim'
 
 -- Garra do youBot comandada de fora: a propriedade customData.gripperClose do
 -- /myRobot vale 1 para fechar e 0 para abrir (a ponte ROS 2 a muda). O dedo 2
 -- anda em velocidade constante, e o dedo 1 o segue, como no modelo original.
+--
+-- A garra não tem física, então este script também "pega": fechando, quando a
+-- abertura chega à largura de uma banana (/pickBanana) que esteja entre os
+-- dedos, a banana é presa à mão e os dedos param. Abrindo, ela é solta e cai.
+
+-- Abertura entre as faces dos dedos = -posição do dedo 2 [m].
+GRASP_GAP = 0.040       -- largura da banana no meio
+GRASP_RADIUS = 0.05     -- distância máxima do centro dos dedos ao meio da banana
+
 function sysCall_init()
     j1 = sim.getObject('../youBotGripperJoint1')
     j2 = sim.getObject('../youBotGripperJoint2')
+    palm = sim.getObject('..')
+    f1 = sim.getObjectChild(j1, 0)
+    f2 = sim.getObjectChild(j2, 0)
     robot = sim.getObject('/myRobot')
+    held = -1
+    tried = false
+end
+
+-- Ponto entre os dedos, no mundo.
+function graspPoint()
+    local a, b = sim.getObjectPosition(f1, -1), sim.getObjectPosition(f2, -1)
+    return {(a[1] + b[1]) / 2, (a[2] + b[2]) / 2, (a[3] + b[3]) / 2}
+end
+
+-- Banana mais perto do ponto entre os dedos, se estiver ao alcance. O meio de
+-- cada banana (customData.graspOffset, no referencial dela) não é o centro da
+-- caixa: ela é curva.
+function bananaBetweenFingers()
+    local p = graspPoint()
+    local best, bestD = -1, GRASP_RADIUS
+    local i = 0
+    while true do
+        local h = sim.getObject('/pickBanana', {index = i, noError = true})
+        if h < 0 then break end
+        if sim.getObjectParent(h) == -1 then
+            local off = sim.getFloatArrayProperty(h, 'customData.graspOffset', {noError = true}) or {0, 0, 0}
+            local m = sim.getObjectMatrix(h, -1)
+            local q = sim.multiplyVector(m, off)
+            local d = math.sqrt((q[1] - p[1]) ^ 2 + (q[2] - p[2]) ^ 2 + (q[3] - p[3]) ^ 2)
+            if d < bestD then best, bestD = h, d end
+        end
+        i = i + 1
+    end
+    return best
 end
 
 function sysCall_actuation()
     local close = sim.getIntProperty(robot, 'customData.gripperClose', {noError = true})
     if close == 1 then
-        sim.setJointTargetVelocity(j2, 0.04)
+        if held >= 0 then
+            sim.setJointTargetVelocity(j2, 0)          -- segurando: dedos parados
+        else
+            sim.setJointTargetVelocity(j2, 0.04)
+            if not tried and -sim.getJointPosition(j2) <= GRASP_GAP then
+                tried = true
+                local h = bananaBetweenFingers()
+                if h >= 0 then
+                    sim.setObjectInt32Param(h, sim.shapeintparam_static, 1)
+                    sim.setObjectParent(h, palm, true)
+                    sim.resetDynamicObject(h)
+                    held = h
+                end
+            end
+        end
     else
+        tried = false
+        if held >= 0 then
+            sim.setObjectParent(held, -1, true)
+            sim.setObjectInt32Param(held, sim.shapeintparam_static, 0)
+            sim.resetDynamicObject(held)
+            held = -1
+        end
         sim.setJointTargetVelocity(j2, -0.04)
     end
     sim.setJointTargetPosition(j1, sim.getJointPosition(j2) * -0.5)
+    sim.setIntProperty(robot, 'customData.holding', held)
 end
 '''
 
@@ -78,13 +159,15 @@ function sysCall_init()
     wheels = {sim.getObject('/myRobot/leftMotor'), sim.getObject('/myRobot/rightMotor')}
 end
 
--- Pose do robô, tempo de simulação e posição de cada junta (braço e dedos).
+-- Pose do robô, tempo de simulação, posição de cada junta (braço e dedos) e
+-- o que a garra segura (handle, ou -1).
 function snapshot()
     local q = {}
     for i, h in ipairs(arm) do q[i] = sim.getJointPosition(h) end
     for i, h in ipairs(fingers) do q[#arm + i] = sim.getJointPosition(h) end
+    local held = sim.getIntProperty(robot, 'customData.holding', {noError = true}) or -1
     return sim.getObjectPosition(robot, -1), sim.getObjectOrientation(robot, -1),
-        sim.getSimulationTime(), q
+        sim.getSimulationTime(), q, held
 end
 
 function setArm(targets)
@@ -99,10 +182,42 @@ function setWheels(left, right)
     sim.setJointTargetVelocity(wheels[1], left)
     sim.setJointTargetVelocity(wheels[2], right)
 end
+
+-- Bananas pegáveis (criadas pelo nó world): handle, matriz no mundo e pai
+-- (-1 no chão; a mão, se estiver na garra).
+function bananas()
+    local out = {}
+    local i = 0
+    while true do
+        local h = sim.getObject('/pickBanana', {index = i, noError = true})
+        if h < 0 then break end
+        out[#out + 1] = {h, sim.getObjectMatrix(h, -1), sim.getObjectParent(h)}
+        i = i + 1
+    end
+    return out
+end
 '''
 
 
-def build(sim, source, youbot_model, output, log=print):
+def _add_basket(sim, model, log=print):
+    """Cesto do largeBasket do CoppeliaSim: reduzido, azul, fixo no chão."""
+    basket = sim.loadModel(model)
+    sx = BASKET_DIAMETER / sim.getShapeBB(basket)[0][0]
+    sz = BASKET_HEIGHT / sim.getShapeBB(basket)[0][2]
+    for h in sim.getObjectsInTree(basket, sim.sceneobject_shape):
+        sim.scaleObject(h, sx, sx, sz, 0)
+        if h != basket:
+            sim.setObjectPosition(h, basket, [0.0, 0.0, 0.0])
+            sim.setShapeColor(h, None, sim.colorcomponent_ambient_diffuse, [0.1, 0.3, 0.85])
+    sim.setObjectInt32Param(basket, sim.shapeintparam_static, 1)
+    sim.setObjectAlias(basket, 'bananaBasket')
+    sim.setObjectOrientation(basket, -1, [0.0, 0.0, 0.0])
+    largura, _, altura = sim.getShapeBB(basket)[0]
+    sim.setObjectPosition(basket, -1, [BASKET_XY[0], BASKET_XY[1], altura / 2])
+    log(f'cesto em {BASKET_XY} (cena), {largura:.2f} m x {altura:.2f} m')
+
+
+def build(sim, source, youbot_model, output, basket_model, log=print):
     sim.loadScene(source)
     robot = sim.getObject('/myRobot')
 
@@ -160,6 +275,15 @@ def build(sim, source, youbot_model, output, log=print):
     sim.setObjectParent(iface, robot, True)
     sim.setObjectAlias(iface, 'rosInterface')
     sim.setIntProperty(robot, 'customData.gripperClose', 0)
+    sim.setIntProperty(robot, 'customData.holding', -1)
+
+    # O robô não colide com as bananas.
+    for h in sim.getObjectsInTree(robot, sim.sceneobject_shape):
+        if sim.getObjectInt32Param(h, sim.shapeintparam_respondable):
+            mask = sim.getObjectInt32Param(h, sim.shapeintparam_respondable_mask)
+            sim.setObjectInt32Param(h, sim.shapeintparam_respondable_mask, mask & ~BANANA_BIT)
+
+    _add_basket(sim, basket_model, log)
 
     sim.saveScene(output)
     log(f'cena salva em {output}')
@@ -189,15 +313,17 @@ def main(argv=None):
     p.add_argument('--source', default=os.path.join(repo, 'simulation', 'scene_house.ttt'))
     p.add_argument('--youbot', default=os.path.join(
         coppelia, 'models', 'robots', 'mobile', 'KUKA YouBot.ttm'))
+    p.add_argument('--basket', default=os.path.join(
+        coppelia, 'models', 'household', 'largeBasket.ttm'))
     p.add_argument('--output', default=os.path.join(repo, 'simulation', 'scene_house_arm.ttt'))
     a = p.parse_args(argv)
-    for caminho in (a.source, a.youbot):
+    for caminho in (a.source, a.youbot, a.basket):
         if not os.path.exists(caminho):
             p.error(f'não achei {caminho}')
     sim = RemoteAPIClient(port=a.port).getObject('sim')
     if sim.getSimulationState() != sim.simulation_stopped:
         sim.stopSimulation()
-    build(sim, a.source, a.youbot, a.output)
+    build(sim, a.source, a.youbot, a.output, a.basket)
 
 
 if __name__ == '__main__':

@@ -3,7 +3,7 @@
 <package format="3">
   <name>picking_robot</name>
   <version>0.0.0</version>
-  <description>O robô aspirador com o braço e a garra do youBot no lugar do lidar: cena, ponte ROS 2 com o CoppeliaSim e teleoperação.</description>
+  <description>O robô aspirador com o braço e a garra do youBot no lugar do lidar: cena, ponte ROS 2 com o CoppeliaSim, teleoperação e recolhimento de bananas para um cesto.</description>
   <maintainer email="indra.araujo.santos@gmail.com">indra</maintainer>
   <license>Apache-2.0</license>
 
@@ -17,6 +17,14 @@
   <exec_depend>rosgraph_msgs</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
   <exec_depend>coppeliasim_zmqremoteapi_client</exec_depend>
+  <exec_depend>std_srvs</exec_depend>
+  <exec_depend>nav2_msgs</exec_depend>
+  <exec_depend>lifecycle_msgs</exec_depend>
+  <exec_depend>nav2_bringup</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <!-- mapa da casa, parâmetros do Nav2, modelo da banana e sorteio de posições -->
+  <exec_depend>vacuum_cleaner</exec_depend>
 
   <test_depend>python3-pytest</test_depend>
 

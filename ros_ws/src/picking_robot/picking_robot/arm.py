@@ -75,6 +75,15 @@ def reach(y, z, pitch=-math.pi, wrist=0.0):
     return max(melhores)[1] if melhores else None
 
 
+def reach_any(y, z, wrist=0.0, pitches=(-math.pi, -2.83, -2.51, -2.2, -1.88, -1.57)):
+    """Como reach, testando inclinações da garra da vertical para a horizontal."""
+    for pitch in pitches:
+        q = reach(y, z, pitch, wrist)
+        if q is not None:
+            return q
+    return None
+
+
 #: Poses prontas [rad]. ``repouso`` é a do modelo original: dobrado em cima do
 #: robô, como na foto do youBot. ``chao`` deixa a ponta dos dedos 2 cm acima
 #: do chão, 25 cm à frente do centro do robô, com a garra apontada para baixo,

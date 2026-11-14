@@ -16,7 +16,11 @@ Saídas:
 - ``/clock``: o tempo da simulação (use ``use_sim_time:=true`` nos outros nós);
 - ``/myRobot/odom`` e a TF ``odom -> base_link``: a pose exata da simulação,
   com a origem onde o robô começou e a frente em +x;
-- ``/joint_states``: as 5 juntas do braço [rad] e os 2 dedos [m].
+- ``/joint_states``: as 5 juntas do braço [rad] e os 2 dedos [m];
+- ``/myRobot/gripper/holding`` (std_msgs/Bool): se a garra segura algo;
+- ``/scan``: um scan vazio (sem nenhum eco) a cada 0,1 s de simulação. A cena
+  não tem laser, e o Nav2 (parâmetros do vacuum_cleaner) espera um: vazio, ele
+  não marca obstáculos, mas mantém o collision_monitor ativo.
 
 Cada leitura e cada comando são uma chamada só ao script
 ``/myRobot/rosInterface`` da cena (ver build_scene.py).
@@ -32,7 +36,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.time import Time
 from rosgraph_msgs.msg import Clock
-from sensor_msgs.msg import JointState
+from sensor_msgs.msg import JointState, LaserScan
 from std_msgs.msg import Bool, Float64MultiArray, String
 import tf2_ros
 
@@ -44,6 +48,8 @@ WHEEL_RADIUS = 0.05
 FORWARD_YAW_OFFSET = math.pi / 2.0
 #: As juntas das rodas giram ao contrário do sentido de avanço.
 MOTOR_SIGN = -1.0
+#: Período do scan vazio [s de simulação].
+SCAN_PERIOD = 0.1
 
 
 class PickingBridge(Node):
@@ -77,6 +83,15 @@ class PickingBridge(Node):
         self.clock_pub = self.create_publisher(Clock, '/clock', 10)
         self.odom_pub = self.create_publisher(Odometry, '/myRobot/odom', 10)
         self.joint_pub = self.create_publisher(JointState, '/joint_states', 10)
+        self.holding_pub = self.create_publisher(Bool, '/myRobot/gripper/holding', 10)
+        self.scan_pub = self.create_publisher(LaserScan, '/scan', 10)
+        self.scan = LaserScan()
+        self.scan.header.frame_id = 'laser_link'
+        self.scan.angle_min, self.scan.angle_max = -math.pi / 2, math.pi / 2
+        self.scan.angle_increment = math.pi / 180.0
+        self.scan.range_min, self.scan.range_max = 0.055, 10.0
+        self.scan.ranges = [float('inf')] * 181
+        self.last_scan = -1.0
         self.tf = tf2_ros.TransformBroadcaster(self)
 
         self.create_subscription(Twist, '/myRobot/cmd_vel', self.on_cmd_vel, 10)
@@ -141,7 +156,7 @@ class PickingBridge(Node):
     def read_loop(self):
         while self.running and rclpy.ok():
             try:
-                pos, ori, t, q = self.reader_sim.callScriptFunction('snapshot', self.iface)
+                pos, ori, t, q, held = self.reader_sim.callScriptFunction('snapshot', self.iface)
             except Exception as erro:
                 self.get_logger().error(f'não consegui ler a cena: {erro}')
                 time.sleep(0.5)
@@ -150,13 +165,13 @@ class PickingBridge(Node):
                 time.sleep(0.002)
                 continue
             try:
-                self.publish(pos, ori, t, q)
+                self.publish(pos, ori, t, q, held)
             except Exception:
                 if not rclpy.ok():      # Ctrl+C: o contexto fechou no meio
                     break
                 raise
 
-    def publish(self, pos, ori, t, q):
+    def publish(self, pos, ori, t, q, held):
         heading = ori[2] + FORWARD_YAW_OFFSET
         if self.origin is None:
             self.origin = (pos[0], pos[1], heading)
@@ -203,6 +218,11 @@ class PickingBridge(Node):
         js.name = arm.ARM_JOINTS + arm.GRIPPER_JOINTS
         js.position = [float(v) for v in q]
         self.joint_pub.publish(js)
+        self.holding_pub.publish(Bool(data=held is not None and held >= 0))
+        if t - self.last_scan >= SCAN_PERIOD:
+            self.last_scan = t
+            self.scan.header.stamp = stamp
+            self.scan_pub.publish(self.scan)
 
 
 def main():
