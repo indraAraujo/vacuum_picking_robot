@@ -19,6 +19,10 @@ Cada cômodo tem:
 
 - ``goal``: ponto livre no meio do cômodo, longe de paredes e móveis, que vira
   o destino do Nav2;
+- ``views``: pontos extras de onde olhar ao mapear, além do destino. O laser
+  não atravessa móveis: num cômodo grande, girar de um ponto só deixa a cama
+  ou o sofá cobrindo tudo o que está atrás. Cômodo pequeno não precisa de
+  nenhum;
 - ``areas``: retângulos ``(x_min, x_max, y_min, y_max)`` usados para dizer em
   que cômodo o robô está e para prender a limpeza ao cômodo: fora deles, o
   cleaning_server enxerga uma parede virtual. Cômodos em L, como o corredor,
@@ -35,16 +39,22 @@ SCENE_ORIGIN = (3.55, 0.775)
 class Room:
     """Um cômodo: nome falado, artigo, destino e área (na cena)."""
 
-    def __init__(self, name, article, goal, areas):
+    def __init__(self, name, article, goal, areas, views=()):
         self.name = name
         self.article = article
         self.goal_scene = goal
         self.areas_scene = areas
+        self.views_scene = tuple(views)
 
     @property
     def goal(self):
         """Destino no frame map."""
         return to_map(*self.goal_scene)
+
+    @property
+    def views(self):
+        """Pontos extras de observação, no frame map."""
+        return [to_map(*p) for p in self.views_scene]
 
     @property
     def area_flat(self):
@@ -60,23 +70,32 @@ class Room:
                    for x0, x1, y0, y1 in self.areas_scene)
 
 
-#: Os cômodos, na ordem em que o robô percorre a casa ("limpar tudo").
+#: Os cômodos, na ordem em que o robô percorre a casa ("limpar tudo"): os sete
+#: do interior, do oeste para o leste, terminando perto da base.
 #:
-#: Entrada, banheiro e quarto ficam de fora: na cena eles estão atrás de portas
-#: fechadas, o laser vê as portas como parede e esses cômodos não entram no
-#: mapa. Para devolvê-los, abra as portas na cena, remapeie e acrescente aqui:
-#:   Room('entrada', 'a', (6.70, -0.80), [(4.40, 8.90, -1.70, -0.10)])
-#:   Room('banheiro', 'o', (7.30, 4.50), [(6.00, 8.90, 3.50, 5.50)])
-#:   Room('quarto', 'o', (9.70, 2.80), [(6.00, 12.60, 1.30, 3.50),
-#:                                      (8.90, 12.60, 3.50, 5.50)])
+#: A entrada fica de fora de propósito. Ela não é um cômodo: passada a porta da
+#: frente, o chão é a calçada do lado de fora, mais baixa que o piso da casa e
+#: ligada a ele por uma rampa. O aspirador não desce lá.
 ROOMS = (
     Room('sala de jantar', 'a', (2.80, 0.30), [(-0.10, 4.40, -0.10, 1.40)]),
-    Room('cozinha', 'a', (3.20, 4.20), [(-0.10, 4.40, 1.40, 5.50)]),
-    Room('sala', 'a', (3.00, -1.60), [(-0.10, 4.40, -3.70, -0.10)]),
+    Room('cozinha', 'a', (3.20, 4.20), [(-0.10, 4.40, 1.40, 5.50)],
+         views=[(0.90, 4.60), (0.80, 2.20)]),
+    Room('sala', 'a', (3.00, -1.60), [(-0.10, 4.40, -3.70, -0.10)],
+         views=[(1.20, -0.80), (3.40, -2.60)]),
     Room('lavabo', 'o', (5.15, 3.70), [(4.40, 5.90, 3.00, 5.50)]),
-    # O corredor também: a faixa leste-oeste e o trecho em frente ao lavabo.
-    Room('corredor', 'o', (6.20, 0.70), [(4.40, 12.60, -0.10, 1.30),
-                                          (4.40, 6.00, 1.30, 3.00)]),
+    # O corredor é um T deitado: a faixa leste-oeste até a porta da frente, o
+    # trecho em frente ao lavabo e o trecho em frente ao banheiro (onde fica o
+    # armário do quarto, encostado na parede do fundo).
+    Room('corredor', 'o', (6.20, 0.70), [(4.40, 8.90, -0.10, 1.40),
+                                         (4.40, 6.00, 1.40, 3.00),
+                                         (6.00, 8.70, 1.40, 3.20)]),
+    # O banheiro é um L: a antessala estreita, de 0,70 m, e o cômodo em si.
+    Room('banheiro', 'o', (7.30, 4.60), [(7.95, 8.65, 2.80, 3.80),
+                                         (6.05, 8.65, 3.80, 5.45)],
+         views=[(6.60, 4.60)]),
+    # A cama ocupa o meio do quarto: de um ponto só, o laser mapeia metade.
+    Room('quarto', 'o', (9.60, 2.80), [(8.75, 12.55, 1.40, 5.45)],
+         views=[(11.90, 4.90), (12.00, 3.00)]),
 )
 
 BY_NAME = {room.name: room for room in ROOMS}

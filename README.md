@@ -130,7 +130,7 @@ Com a janela `teleop` em foco, use `i`/`,` para andar para a frente e para trás
 
 ### Refazer o mapa
 
-O mapa salvo foi gerado automaticamente pelo `house_mapper`: com o SLAM ligado, ele leva o robô a cada cômodo de `rooms.py` pelo Nav2, dá uma volta de 360° em cada um (o lidar só vê 180° à frente) e salva o mapa e o estado do SLAM. Para refazer:
+O mapa salvo foi gerado automaticamente pelo `house_mapper`: com o SLAM ligado, ele leva o robô a cada cômodo de `rooms.py` pelo Nav2, dá uma volta de 360° em cada um (o lidar só vê 180° à frente) e salva o mapa e o estado do SLAM. Nos cômodos grandes ele para em mais de um ponto (`views`, em `rooms.py`): de um ponto só, a cama ou o sofá escondem tudo o que está atrás deles. Para refazer:
 
 1. Suba o projeto com o SLAM: `ros2 launch vacuum_cleaner vacuum_cleaner.launch.py slam:=true`
 2. Em outro terminal, na raiz do repositório:
@@ -142,7 +142,7 @@ O mapa salvo foi gerado automaticamente pelo `house_mapper`: com o SLAM ligado, 
 
 3. Recompile o `vacuum_cleaner` para instalar o mapa novo e suba o projeto de novo, sem `slam:=true`.
 
-Na simulação sem janela, o percurso pelos cinco cômodos levou cerca de 8 minutos. Cômodo que não dá para alcançar é anotado e pulado depois de `goal_timeout` (padrão: 600 s), então cada cômodo inalcançável soma até 10 minutos.
+O percurso são 15 paradas (os sete cômodos, sete pontos de observação extras e a base) e levou cerca de 20 minutos com a janela do CoppeliaSim aberta. Parada que não dá para alcançar é anotada e pulada depois de `goal_timeout` (padrão: 600 s), então cada uma inalcançável soma até 10 minutos. Destino a menos de `skip_distance` (0,5 m) do robô vira só o giro, sem chamar o Nav2: a essa distância o controlador fica corrigindo a esmo e não fecha o critério de chegada.
 
 Também dá para completar o mapa à mão: suba com `slam:=true`, dirija pelo teclado até as áreas que faltam e salve com:
 
@@ -154,7 +154,24 @@ Salve antes de fechar o launch, porque o mapa em construção fica só na memór
 
 #### Cobertura do mapa atual
 
-O mapa cobre a **sala de jantar, a cozinha, a sala, o lavabo e o corredor**. Entrada, banheiro e quarto ficaram de fora porque, na cena, as portas deles estão **fechadas**: o laser vê as portas como parede, e o Nav2 não tem por onde entrar. Para incluí-los, abra essas portas na cena, refaça o mapa e devolva os três cômodos em `rooms.py` (as coordenadas estão comentadas lá).
+O mapa cobre a casa inteira por dentro: **sala de jantar, cozinha, sala, lavabo, corredor, banheiro e quarto**. As sete portas da cena estão abertas, e o `house_mapper` visita os sete cômodos.
+
+Medindo quanto de cada cômodo o mapa conhece (célula livre ou parede; o resto é o que o laser não viu):
+
+| cômodo | conhecido |
+|---|---|
+| sala de jantar | 94% |
+| cozinha | 77% |
+| sala | 75% |
+| lavabo | 94% |
+| corredor | 91% |
+| banheiro | 94% |
+| quarto | 68% |
+| **casa** | **81%** |
+
+O que falta é o que o laser não alcança e o robô também não limpa: o vão embaixo da cama, do sofá e dos armários, e a espessura das paredes dentro dos retângulos de cada cômodo.
+
+A **entrada fica de fora de propósito**. Ela não é um cômodo: passada a porta da frente, o chão é a calçada do lado de fora, mais baixa que o piso da casa e ligada a ele por uma rampa. O aspirador não desce lá.
 
 As paredes da cena não têm colisão física (`respondable` desligado). Com o mapa, o Nav2 não manda o robô por elas, mas comandos diretos, como os do teclado ou da limpeza, ainda podem atravessá-las.
 
@@ -179,7 +196,7 @@ O microfone já fica ouvindo. Fale, por exemplo, **"vá para a cozinha"**: o rob
 | "parar" | Cancela tudo e para onde está |
 | "como está" | Diz onde está, para onde vai e quanto falta |
 
-Os cômodos são: **sala de jantar, cozinha, sala, lavabo e corredor**, os que estão no mapa (veja "Cobertura do mapa atual").
+Os cômodos são: **sala de jantar, cozinha, sala, lavabo, corredor, banheiro e quarto** (veja "Cobertura do mapa atual").
 
 O robô transcreve tudo o que ouve, mas só age quando a frase é um comando. As outras falas aparecem no log como `ouvido, mas não é tarefa minha`.
 
@@ -390,7 +407,7 @@ ros2 service call /lifecycle_manager/manage_nodes nav2_msgs/srv/ManageLifecycleN
 - A limpeza não usa o Nav2: ela publica velocidades direto em `/myRobot/cmd_vel`. Durante a limpeza, a voz recusa comandos de deslocamento até você dizer "parar".
 - A bateria e o sinal da base são simulados dentro do `myrobot_server`, sem relação com a posição real da base.
 - O lidar cobre 180° à frente do robô.
-- O mapa não cobre entrada, banheiro e quarto (portas fechadas na cena), e as paredes da cena não têm colisão.
+- O mapa cobre a casa por dentro, mas não a entrada, que fica fora da porta da frente e num nível mais baixo. As paredes da cena não têm colisão.
 
 ## Referências
 

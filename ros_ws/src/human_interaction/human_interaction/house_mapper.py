@@ -2,7 +2,9 @@
 
 Roda com o projeto no ar (SLAM e Nav2) e com o laser **ligado**. Para cada
 cômodo de rooms.py, manda o robô ao destino pelo Nav2 e dá uma volta completa
-no lugar, porque o laser só vê 180 graus à frente. No fim, salva:
+no lugar, porque o laser só vê 180 graus à frente. Cômodo grande tem pontos de
+observação extras (``views``), visitados do mesmo jeito: de um ponto só, a cama
+ou o sofá escondem o que está atrás deles. No fim, salva:
 
 - o mapa (``<output>.pgm`` e ``<output>.yaml``), pelo map_saver;
 - o estado do SLAM (``<output>_slam.data`` e ``.posegraph``), para continuar o
@@ -36,6 +38,8 @@ class HouseMapper(Node):
         self.declare_parameter('output', '')
         self.declare_parameter('spin', True)
         self.declare_parameter('goal_timeout', 600.0)   # [s de relógio]
+        #: Alvo a menos disto do robô: giro no lugar, sem chamar o Nav2 [m].
+        self.declare_parameter('skip_distance', 0.5)
         self.nav = ActionClient(self, NavigateToPose, '/navigate_to_pose')
         self.spin_ac = ActionClient(self, Spin, '/spin')
         self.serialize = self.create_client(
@@ -66,16 +70,25 @@ class HouseMapper(Node):
 
     def go(self, name, xy):
         robot = self.robot_xy()
-        yaw = rooms.heading(robot, xy) if robot else 0.0
-        goal = NavigateToPose.Goal()
-        goal.pose.header.frame_id = 'map'
-        goal.pose.pose.position.x = float(xy[0])
-        goal.pose.pose.position.y = float(xy[1])
-        goal.pose.pose.orientation.z = math.sin(yaw / 2.0)
-        goal.pose.pose.orientation.w = math.cos(yaw / 2.0)
-        self.get_logger().info(f'indo para {name} ({xy[0]:+.2f}, {xy[1]:+.2f})')
-        ok = self.run_action(self.nav, goal,
-                             self.get_parameter('goal_timeout').value)
+        # Alvo quase embaixo do robô: o controlador fica corrigindo a esmo e
+        # não fecha o critério de chegada. Como aqui o que vale é o giro, e
+        # não a pose, fico onde estou.
+        perto = robot is not None and math.dist(robot, xy) < self.get_parameter(
+            'skip_distance').value
+        if perto:
+            self.get_logger().info(f'já estou em {name}, não preciso andar')
+            ok = True
+        else:
+            yaw = rooms.heading(robot, xy) if robot else 0.0
+            goal = NavigateToPose.Goal()
+            goal.pose.header.frame_id = 'map'
+            goal.pose.pose.position.x = float(xy[0])
+            goal.pose.pose.position.y = float(xy[1])
+            goal.pose.pose.orientation.z = math.sin(yaw / 2.0)
+            goal.pose.pose.orientation.w = math.cos(yaw / 2.0)
+            self.get_logger().info(f'indo para {name} ({xy[0]:+.2f}, {xy[1]:+.2f})')
+            ok = self.run_action(self.nav, goal,
+                                 self.get_parameter('goal_timeout').value)
         if ok and self.get_parameter('spin').value:
             spin = Spin.Goal()
             spin.target_yaw = 2.0 * math.pi
@@ -107,7 +120,12 @@ class HouseMapper(Node):
             if not client.wait_for_server(timeout_sec=60.0):
                 self.get_logger().error(f'ação /{nome} não apareceu: o Nav2 está no ar?')
                 return 1
-        roteiro = [(r.name, r.goal) for r in rooms.ROOMS] + [('base', rooms.BASE)]
+        roteiro = []
+        for sala in rooms.ROOMS:
+            roteiro.append((sala.name, sala.goal))
+            roteiro += [(f'{sala.name} (ponto {i})', xy)
+                        for i, xy in enumerate(sala.views, 2)]
+        roteiro.append(('base', rooms.BASE))
         falhas = [nome for nome, xy in roteiro if not self.go(nome, xy)]
         if falhas:
             self.get_logger().warn('não cheguei em: ' + ', '.join(falhas))

@@ -13,6 +13,14 @@ def test_destino_cai_no_proprio_comodo(room):
     assert rooms.room_at(*room.goal) == room.name
 
 
+@pytest.mark.parametrize('room', [r for r in rooms.ROOMS if r.views],
+                         ids=lambda r: r.name)
+def test_ponto_de_observacao_cai_no_proprio_comodo(room):
+    """Os pontos extras do mapeamento são do cômodo, não do vizinho."""
+    for xy in room.views:
+        assert rooms.room_at(*xy) == room.name, xy
+
+
 def test_base_fica_na_sala_de_jantar():
     assert rooms.room_at(*rooms.BASE) == 'sala de jantar'
 
