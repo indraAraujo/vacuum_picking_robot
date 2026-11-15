@@ -79,7 +79,7 @@ class Room:
 ROOMS = (
     Room('sala de jantar', 'a', (2.80, 0.30), [(-0.10, 4.40, -0.10, 1.40)]),
     Room('cozinha', 'a', (3.20, 4.20), [(-0.10, 4.40, 1.40, 5.50)],
-         views=[(0.90, 4.60), (0.80, 2.20)]),
+         views=[(0.90, 4.20), (0.80, 2.20)]),
     Room('sala', 'a', (3.00, -1.60), [(-0.10, 4.40, -3.70, -0.10)],
          views=[(1.20, -0.80), (3.40, -2.60)]),
     Room('lavabo', 'o', (5.15, 3.70), [(4.40, 5.90, 3.00, 5.50)]),
@@ -90,12 +90,14 @@ ROOMS = (
                                          (4.40, 6.00, 1.40, 3.00),
                                          (6.00, 8.70, 1.40, 3.20)]),
     # O banheiro é um L: a antessala estreita, de 0,70 m, e o cômodo em si.
-    Room('banheiro', 'o', (7.30, 4.60), [(7.95, 8.65, 2.80, 3.80),
+    # O alvo fica na metade leste, a parte vazia: no meio do cômodo o robô
+    # passa raspando entre a pia e o vaso.
+    Room('banheiro', 'o', (8.00, 4.60), [(7.95, 8.65, 2.80, 3.80),
                                          (6.05, 8.65, 3.80, 5.45)],
          views=[(6.60, 4.60)]),
     # A cama ocupa o meio do quarto: de um ponto só, o laser mapeia metade.
     Room('quarto', 'o', (9.60, 2.80), [(8.75, 12.55, 1.40, 5.45)],
-         views=[(11.90, 4.90), (12.00, 3.00)]),
+         views=[(12.10, 4.70), (12.00, 3.00)]),
 )
 
 BY_NAME = {room.name: room for room in ROOMS}
