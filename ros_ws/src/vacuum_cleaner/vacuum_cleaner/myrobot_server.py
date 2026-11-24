@@ -416,46 +416,27 @@ class MyRobot(LifecycleNode):
     def _on_publish_docking(self):
         strength = Float32()
         angle = Float32()
-        near = False
+        
+        try:
+            # Lê os sinais flutuantes diretamente do CoppeliaSim usando a API do leitor ou cliente principal
+            # Exemplo considerando que o script Lua gravou com esses nomes exatos:
+            sig_strength = self.sim.getFloatSignal('StrengthSignal')
+            rel_angle = self.sim.getFloatSignal('RelativeAngle')
+            
+            strength.data = sig_strength if sig_strength is not None else 0.0
+            angle.data = rel_angle if rel_angle is not None else 0.0
+            
+            # Define se está próximo o suficiente com base na força do sinal (ex: > 0.5)
+            self._near_base = strength.data > 0.5
+            
+        except Exception as e:
+            # Fallback seguro caso o sinal não exista na cena ainda
+            strength.data = 0.0
+            angle.data = 0.0
+            self._near_base = False
 
-        if self._mode in (Mode.CHARGING, Mode.CHARGED):
-            near = random.random() > 0.7  # pretend we sometimes see the dock strong
-            strength.data = 0.5 + (0.5 if near else 0.0)
-            angle.data = 0.0 if near else random.uniform(-math.pi/4, math.pi/4)
-        else:
-            strength.data = random.uniform(0.0, 0.4)
-            angle.data = random.uniform(-math.pi, math.pi)
-
-        self._near_base = near
         self.pub_strength.publish(strength)
         self.pub_angle.publish(angle)
-
-    def _on_publish_battery(self):
-        # Pelo tempo de simulação, não pelo relógio: a cena roda abaixo do
-        # tempo real, e pelo relógio a bateria acabava em ~30 s de simulação.
-        # Mesmas taxas por segundo de antes (1 %/s limpando, 2 %/s carregando).
-        with self.lock:
-            now = self.sim_time
-        dt = 0.0 if self._battery_t is None else max(0.0, now - self._battery_t)
-        self._battery_t = now
-        if self._mode == Mode.CLEANING:
-            self._battery = max(0.0, self._battery - self.battery_drain * dt)
-        elif self._mode == Mode.CHARGING:
-            self._battery = min(1.0, self._battery + self.battery_charge * dt)
-
-        bs = BatteryState()
-        bs.percentage = float(self._battery)
-        bs.power_supply_status = (
-            BatteryState.POWER_SUPPLY_STATUS_CHARGING
-            if self._mode == Mode.CHARGING
-            else BatteryState.POWER_SUPPLY_STATUS_DISCHARGING
-        )
-        self.pub_batt.publish(bs)
-
-    def _on_timer(self):
-        self._on_publish_docking()
-        self._on_publish_battery()
-
 
 def main():
     rclpy.init()
